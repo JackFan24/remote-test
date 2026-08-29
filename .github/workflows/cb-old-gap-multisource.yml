@@ -1,0 +1,62 @@
+name: cb-old-gap-multisource
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cb-old-gap-multisource.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose-old-gaps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Query Eastmoney Tencent NetEase and alternate Sina endpoints
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, re, csv
+          from urllib.request import Request,urlopen
+          from urllib.parse import urlencode
+          from urllib.error import HTTPError
+          os.makedirs('old_gap_diag',exist_ok=True)
+          tests=[
+            ('sh100016','20050301','20050315'),
+            ('sz125069','20050301','20050315'),
+            ('sh100726','20050301','20050315'),
+            ('sh110325','20060904','20060911'),
+            ('sh110398','20060904','20060911'),
+            ('sz125024','20060904','20060911')]
+          def get(url):
+              req=Request(url,headers={'User-Agent':'Mozilla/5.0','Accept':'*/*','Referer':'https://finance.sina.com.cn/'})
+              try:
+                  with urlopen(req,timeout=25) as r:return r.status,r.read().decode('utf-8','replace')
+              except HTTPError as e:return e.code,e.read().decode('utf-8','replace')
+              except Exception as e:return -1,repr(e)
+          out=[]
+          for sym,beg,end in tests:
+              code=sym[2:]; market='1' if sym.startswith('sh') else '0'
+              urls={
+                'eastmoney': 'https://push2his.eastmoney.com/api/qt/stock/kline/get?'+urlencode({'secid':market+'.'+code,'klt':'101','fqt':'0','beg':beg,'end':end,'fields1':'f1,f2,f3,f4,f5,f6','fields2':'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61'}),
+                'tencent': f'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={sym},day,{beg[:4]}-{beg[4:6]}-{beg[6:]},{end[:4]}-{end[4:6]}-{end[6:]},100,qfq',
+                'tencent_raw': f'https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param={sym},day,{beg[:4]}-{beg[4:6]}-{beg[6:]},{end[:4]}-{end[4:6]}-{end[6:]},100',
+                'netease': 'https://quotes.money.163.com/service/chddata.html?'+urlencode({'code':('0' if sym.startswith('sh') else '1')+code,'start':beg,'end':end,'fields':'TCLOSE;HIGH;LOW;TOPEN;VOTURNOVER'}),
+                'sina_alt': 'https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketData.getKLineData?'+urlencode({'symbol':sym,'scale':'240','ma':'no','datalen':'1023'}),
+              }
+              for source,url in urls.items():
+                  st,txt=get(url)
+                  fn=f'old_gap_diag/{sym}_{source}.txt';open(fn,'w',encoding='utf-8').write(txt)
+                  hit='2005-03-10' in txt or '2005/03/10' in txt or '20050310' in txt or '2006-09-07' in txt or '2006/09/07' in txt or '20060907' in txt
+                  rec={'symbol':sym,'source':source,'http':st,'bytes':len(txt.encode("utf-8")),'target_hit':hit,'head':txt[:180].replace('\n',' ')}
+                  out.append(rec);print(json.dumps(rec,ensure_ascii=False),flush=True)
+          with open('old_gap_diag/summary.csv','w',newline='',encoding='utf-8-sig') as f:
+              w=csv.DictWriter(f,fieldnames=['symbol','source','http','bytes','target_hit','head']);w.writeheader();w.writerows(out)
+          PY
+      - name: Upload diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: cb-old-gap-multisource
+          path: old_gap_diag/

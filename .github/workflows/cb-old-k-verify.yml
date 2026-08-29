@@ -21,94 +21,66 @@ jobs:
           import csv, json, os, sys
           from datetime import datetime, timezone, timedelta
           from urllib.request import Request, urlopen
-          from urllib.error import HTTPError, URLError
+          from urllib.error import HTTPError
 
           URL = 'https://market.ft.tech/gateway/api/v1/market/data/convertible-bond-candlesticks'
           SH = timezone(timedelta(hours=8))
           since = int(datetime(2012, 3, 27, 0, 0, tzinfo=SH).timestamp() * 1000)
           until = int(datetime(2012, 4, 3, 23, 59, 59, tzinfo=SH).timestamp() * 1000)
-          anchors = {
-              '110003.SH': 102.16,
-              '125731.SZ': 109.197,
-              '113001.SH': 94.72,
-          }
+          anchors = {'110003.SH': 102.16, '125731.SZ': 109.197, '113001.SH': 94.72}
           os.makedirs('cb_verify', exist_ok=True)
 
           def collect_rows(obj):
-              out = []
+              out=[]
               def walk(x):
                   if isinstance(x, dict):
-                      if 'close' in x and ('ts_millis' in x or 'date' in x or 'time' in x):
-                          out.append(x)
+                      if 'close' in x and ('ts_millis' in x or 'date' in x or 'time' in x): out.append(x)
                       for v in x.values(): walk(v)
                   elif isinstance(x, list):
                       for v in x: walk(v)
               walk(obj)
-              # de-duplicate by a stable JSON representation
-              seen, uniq = set(), []
+              seen=set(); uniq=[]
               for r in out:
-                  key = json.dumps(r, ensure_ascii=False, sort_keys=True, default=str)
-                  if key not in seen:
-                      seen.add(key); uniq.append(r)
+                  key=json.dumps(r, ensure_ascii=False, sort_keys=True, default=str)
+                  if key not in seen: seen.add(key); uniq.append(r)
               return uniq
 
-          summary = []
-          all_rows = []
+          summary=[]; all_rows=[]
           for symbol, expected in anchors.items():
-              body = {
-                  'symbol': symbol,
-                  'interval_unit': 'Day',
-                  'adjust_kind': 'None',
-                  'since_ts_millis': since,
-                  'until_ts_millis': until,
-                  'limit': 20,
-              }
-              req = Request(URL, data=json.dumps(body).encode('utf-8'), headers={'Content-Type':'application/json','Accept':'application/json'}, method='POST')
-              raw_path = f"cb_verify/{symbol.replace('.', '_')}_raw.json"
+              body={'symbol':symbol,'interval_unit':'day','adjust_kind':'none','since_ts_millis':since,'until_ts_millis':until,'limit':20}
+              req=Request(URL,data=json.dumps(body).encode('utf-8'),headers={'Content-Type':'application/json','Accept':'application/json'},method='POST')
+              raw_path=f"cb_verify/{symbol.replace('.', '_')}_raw.json"
               try:
                   with urlopen(req, timeout=45) as resp:
-                      raw = resp.read().decode('utf-8', errors='replace')
-                      status = resp.status
+                      raw=resp.read().decode('utf-8',errors='replace'); status=resp.status
               except HTTPError as e:
-                  raw = e.read().decode('utf-8', errors='replace')
-                  status = e.code
+                  raw=e.read().decode('utf-8',errors='replace'); status=e.code
               except Exception as e:
-                  raw = json.dumps({'exception': type(e).__name__, 'message': str(e)}, ensure_ascii=False)
-                  status = -1
-              open(raw_path, 'w', encoding='utf-8').write(raw)
-              try:
-                  obj = json.loads(raw)
-              except Exception:
-                  obj = {'raw_text': raw}
-              rows = collect_rows(obj)
-              match = None
+                  raw=json.dumps({'exception':type(e).__name__,'message':str(e)},ensure_ascii=False); status=-1
+              open(raw_path,'w',encoding='utf-8').write(raw)
+              try: obj=json.loads(raw)
+              except Exception: obj={'raw_text':raw}
+              rows=collect_rows(obj); match=None
               for r in rows:
-                  ts = r.get('ts_millis')
-                  dt = None
+                  ts=r.get('ts_millis'); dt=None
                   if ts is not None:
-                      try: dt = datetime.fromtimestamp(int(ts)/1000, tz=SH).date().isoformat()
+                      try: dt=datetime.fromtimestamp(int(ts)/1000,tz=SH).date().isoformat()
                       except Exception: pass
                   if dt is None:
                       for k in ('date','time'):
-                          if r.get(k):
-                              dt = str(r[k])[:10]; break
-                  close = r.get('close')
-                  rec = {'symbol': symbol, 'date': dt or '', 'close': close, 'ts_millis': ts or '', 'http_status': status}
-                  all_rows.append(rec)
-                  if dt == '2012-03-30':
+                          if r.get(k): dt=str(r[k])[:10]; break
+                  close=r.get('close')
+                  all_rows.append({'symbol':symbol,'date':dt or '','close':close,'ts_millis':ts or '','http_status':status})
+                  if dt=='2012-03-30':
                       try:
-                          actual = float(close)
-                          match = {'actual': actual, 'expected': expected, 'diff': actual-expected, 'pass': abs(actual-expected) <= 0.005}
-                      except Exception:
-                          match = {'actual': close, 'expected': expected, 'diff': None, 'pass': False}
-              summary.append({'symbol': symbol, 'http_status': status, 'rows_found': len(rows), 'anchor': match, 'raw_file': raw_path})
-
+                          actual=float(close); match={'actual':actual,'expected':expected,'diff':actual-expected,'pass':abs(actual-expected)<=0.005}
+                      except Exception: match={'actual':close,'expected':expected,'diff':None,'pass':False}
+              summary.append({'symbol':symbol,'http_status':status,'rows_found':len(rows),'anchor':match,'raw_file':raw_path})
           with open('cb_verify/rows.csv','w',newline='',encoding='utf-8-sig') as f:
-              w=csv.DictWriter(f, fieldnames=['symbol','date','close','ts_millis','http_status']); w.writeheader(); w.writerows(all_rows)
-          open('cb_verify/summary.json','w',encoding='utf-8').write(json.dumps(summary, ensure_ascii=False, indent=2))
-          print(json.dumps(summary, ensure_ascii=False, indent=2))
-          if not all(s.get('http_status') == 200 and s.get('anchor') and s['anchor'].get('pass') for s in summary):
-              sys.exit(2)
+              w=csv.DictWriter(f,fieldnames=['symbol','date','close','ts_millis','http_status']); w.writeheader(); w.writerows(all_rows)
+          open('cb_verify/summary.json','w',encoding='utf-8').write(json.dumps(summary,ensure_ascii=False,indent=2))
+          print(json.dumps(summary,ensure_ascii=False,indent=2))
+          if not all(s.get('http_status')==200 and s.get('anchor') and s['anchor'].get('pass') for s in summary): sys.exit(2)
           PY
           python /tmp/fetch_cb.py
 

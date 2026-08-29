@@ -10,105 +10,49 @@ permissions:
   contents: read
 
 jobs:
-  verify-real-old-cb-k:
+  crosscheck-akshare-sina:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - name: Query FTShare full-life and Sohu anchor window
+      - name: Install AKShare
+        run: python -m pip install -q --disable-pip-version-check akshare
+
+      - name: Fetch three legacy CB daily histories from Sina via AKShare
         shell: bash
         run: |
-          cat > /tmp/verify.py <<'PY'
-          import json, os, re
-          from datetime import datetime, timezone, timedelta
-          from urllib.request import Request, urlopen
-          from urllib.error import HTTPError
+          cat > /tmp/cross.py <<'PY'
+          import json, os, traceback
+          import pandas as pd
+          import akshare as ak
 
-          SH=timezone(timedelta(hours=8))
-          os.makedirs('cb_real',exist_ok=True)
-          anchors={'110003':102.16,'125731':109.197,'113001':94.72}
-          periods={
-            '110003':((2008,9,5),(2013,8,7),'SH'),
-            '125731':((2010,6,25),(2013,4,15),'SZ'),
-            '113001':((2010,6,18),(2015,3,9),'SH'),
-          }
-          def ms(d, end=False):
-              y,m,day=d; return int(datetime(y,m,day,23 if end else 0,59 if end else 0,59 if end else 0,tzinfo=SH).timestamp()*1000)
-          def req(method,url,body=None,headers=None):
-              data=None if body is None else json.dumps(body).encode('utf-8')
-              h={'User-Agent':'Mozilla/5.0','Accept':'*/*'}; h.update(headers or {})
-              r=Request(url,data=data,headers=h,method=method)
+          os.makedirs('cb_cross', exist_ok=True)
+          anchors={'sh110003':102.16,'sz125731':109.197,'sh113001':94.72}
+          summary=[]
+          for symbol, expected in anchors.items():
               try:
-                  with urlopen(r,timeout=60) as x: return x.status,x.read().decode('utf-8','replace')
-              except HTTPError as e: return e.code,e.read().decode('utf-8','replace')
-              except Exception as e: return -1,json.dumps({'exception':type(e).__name__,'message':str(e)},ensure_ascii=False)
-
-          results=[]
-          # FTShare: full life for the two Shanghai legacy bonds; active bond sanity test
-          furl='https://market.ft.tech/gateway/api/v1/market/data/convertible-bond-candlesticks'
-          for code in ['110003','113001']:
-              start,end,market=periods[code]
-              body={'symbol':f'{code}.{market}','interval_unit':'day','adjust_kind':'none','since_ts_millis':ms(start),'until_ts_millis':ms(end,True),'limit':5000}
-              st,raw=req('POST',furl,body,{'Content-Type':'application/json','Accept':'application/json'})
-              open(f'cb_real/ft_{code}.json','w',encoding='utf-8').write(raw)
-              try: obj=json.loads(raw)
-              except: obj={}
-              data=obj.get('data') if isinstance(obj,dict) else None
-              anchor=None
-              if isinstance(data,list):
-                  for r in data:
-                      ts=r.get('ts_millis') if isinstance(r,dict) else None
-                      if ts:
-                          dt=datetime.fromtimestamp(int(ts)/1000,tz=SH).date().isoformat()
-                          if dt=='2012-03-30': anchor=float(r['close'])
-              results.append({'source':'FTShare','code':code,'status':st,'message':obj.get('message') if isinstance(obj,dict) else None,'rows':len(data) if isinstance(data,list) else None,'anchor':anchor,'expected':anchors[code]})
-          # Active control confirms FTShare K endpoint itself works with required since/until.
-          body={'symbol':'113027.SH','interval_unit':'day','adjust_kind':'none','since_ts_millis':ms((2024,6,3)),'until_ts_millis':ms((2024,6,6),True),'limit':20}
-          st,raw=req('POST',furl,body,{'Content-Type':'application/json','Accept':'application/json'})
-          open('cb_real/ft_113027_control.json','w',encoding='utf-8').write(raw)
-          try: obj=json.loads(raw)
-          except: obj={}
-          data=obj.get('data') if isinstance(obj,dict) else None
-          results.append({'source':'FTShare','code':'113027_control','status':st,'message':obj.get('message') if isinstance(obj,dict) else None,'rows':len(data) if isinstance(data,list) else None})
-
-          # Sohu direct hisHq: same narrow window for all three.
-          for code in anchors:
-              url=f'https://q.stock.sohu.com/hisHq?code=cn_{code}&start=20120327&end=20120403&stat=1&order=A&period=d&callback=historySearchHandler&rt=jsonp'
-              st,raw=req('GET',url)
-              open(f'cb_real/sohu_{code}.txt','w',encoding='utf-8').write(raw)
-              # Strip JSONP if present.
-              text=raw.strip()
-              m=re.search(r'^[^(]*\((.*)\)\s*;?\s*$',text,re.S)
-              if m: text=m.group(1)
-              try: obj=json.loads(text)
-              except Exception: obj=None
-              rows=[]
-              def walk(x):
-                  if isinstance(x,dict):
-                      if isinstance(x.get('hq'),list): rows.extend(x['hq'])
-                      for v in x.values(): walk(v)
-                  elif isinstance(x,list):
-                      for v in x: walk(v)
-              walk(obj)
-              # hq row format: date, open, close, change, pct, low, high, volume, amount, turnover
-              found=[]; anchor=None
-              for r in rows:
-                  if isinstance(r,list) and len(r)>=3:
-                      found.append(r)
-                      if str(r[0])=='2012-03-30':
-                          try: anchor=float(r[2])
-                          except: pass
-              open(f'cb_real/sohu_{code}_rows.json','w',encoding='utf-8').write(json.dumps(found,ensure_ascii=False,indent=2))
-              results.append({'source':'Sohu','code':code,'status':st,'rows':len(found),'anchor':anchor,'expected':anchors[code],'raw_prefix':raw[:180]})
-
-          print(json.dumps(results,ensure_ascii=False,indent=2))
-          open('cb_real/summary.json','w',encoding='utf-8').write(json.dumps(results,ensure_ascii=False,indent=2))
+                  df=ak.bond_zh_hs_cov_daily(symbol=symbol)
+                  if df is None: df=pd.DataFrame()
+                  df.to_csv(f'cb_cross/{symbol}.csv',index=False,encoding='utf-8-sig')
+                  cols=[str(c) for c in df.columns]
+                  date_col=next((c for c in df.columns if str(c).lower() in ('date','日期','trade_date')),None)
+                  close_col=next((c for c in df.columns if str(c).lower() in ('close','收盘','收盘价')),None)
+                  anchor=None
+                  if date_col is not None and close_col is not None and not df.empty:
+                      dates=pd.to_datetime(df[date_col],errors='coerce').dt.strftime('%Y-%m-%d')
+                      hit=df.loc[dates=='2012-03-30',close_col]
+                      if len(hit): anchor=float(hit.iloc[0])
+                  summary.append({'symbol':symbol,'ok':True,'rows':len(df),'columns':cols,'first':str(df.iloc[0].to_dict())[:500] if len(df) else None,'last':str(df.iloc[-1].to_dict())[:500] if len(df) else None,'anchor':anchor,'expected':expected})
+              except Exception as e:
+                  summary.append({'symbol':symbol,'ok':False,'error':repr(e),'trace':traceback.format_exc()[-1500:]})
+          print(json.dumps(summary,ensure_ascii=False,indent=2))
+          open('cb_cross/summary.json','w',encoding='utf-8').write(json.dumps(summary,ensure_ascii=False,indent=2))
           PY
-          python /tmp/verify.py
+          python /tmp/cross.py
 
-      - name: Upload real-response diagnostics
+      - name: Upload crosscheck
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cb-real-old-k
-          path: cb_real/
+          name: cb-akshare-sina-crosscheck
+          path: cb_cross/
           if-no-files-found: warn

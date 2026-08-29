@@ -1,0 +1,50 @@
+name: cb-close-pkl-extract
+on:
+  push:
+    paths: ['.github/workflows/cb-close-pkl-extract.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Clone public CB dataset and extract Close matrix
+        shell: bash
+        run: |
+          python -m pip install -q --disable-pip-version-check pandas
+          git clone --depth 1 https://github.com/reskfa/cb_with_any_api.git repo
+          python - <<'PY'
+          import os,json
+          import pandas as pd
+          os.makedirs('close_extract',exist_ok=True)
+          p='repo/data/Close.pkl'
+          print('FILE_EXISTS',os.path.exists(p),'SIZE',os.path.getsize(p) if os.path.exists(p) else None,flush=True)
+          x=pd.read_pickle(p)
+          print('TYPE',type(x).__name__,'SHAPE',getattr(x,'shape',None),flush=True)
+          print('INDEX_HEAD',list(x.index[:5]),'INDEX_TAIL',list(x.index[-5:]),flush=True)
+          print('COL_HEAD',[str(c) for c in x.columns[:30]],flush=True)
+          # normalize date index
+          idx=pd.to_datetime(x.index,errors='coerce'); x=x.copy();x.index=idx
+          targets=pd.to_datetime(['2005-03-04','2005-03-07','2005-03-08','2005-03-09','2005-03-10','2005-03-11','2005-03-17','2005-03-18','2005-03-21','2005-03-22','2005-03-23','2005-03-24','2005-03-25','2005-03-28','2005-03-29','2005-03-30','2005-03-31','2005-04-01','2005-04-04','2005-04-05','2005-04-11','2005-04-12','2005-05-11','2005-10-28','2006-09-07','2010-06-23','2012-07-30','2005-06-10','2012-06-27','2013-03-28'])
+          sub=x.reindex(targets)
+          sub.to_csv('close_extract/target_dates_matrix.csv',encoding='utf-8-sig')
+          # find 126002-like columns and some validation codes
+          cols=[c for c in x.columns if any(k in str(c) for k in ['126002','110003','125731','113001','100016','125069'])]
+          print('MATCH_COLS',[str(c) for c in cols],flush=True)
+          if cols:
+              x.loc[(x.index>=pd.Timestamp('2005-03-01'))&(x.index<=pd.Timestamp('2006-04-30')),cols].to_csv('close_extract/matched_columns_2005_2006.csv',encoding='utf-8-sig')
+          # row medians/counts raw matrix for target dates for diagnostic only
+          q=[]
+          for d in targets:
+              if d in x.index:
+                  row=pd.to_numeric(x.loc[d],errors='coerce').dropna()
+                  q.append({'date':d.strftime('%Y-%m-%d'),'n_nonnull':int(len(row)),'median_all_matrix':float(row.median()) if len(row) else None})
+          pd.DataFrame(q).to_csv('close_extract/target_row_stats.csv',index=False,encoding='utf-8-sig')
+          print(json.dumps(q,ensure_ascii=False),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cb-close-pkl-extract
+          path: close_extract/

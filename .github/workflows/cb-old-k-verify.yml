@@ -10,18 +10,19 @@ permissions:
   contents: read
 
 jobs:
-  extend-2015-2017-cb-universe:
+  extend-2015-2017-fast:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Install AKShare
         run: python -m pip install -q --disable-pip-version-check akshare
 
-      - name: Enumerate 1039 historical CBs and fetch 2015-2017 daily K-lines
+      - name: Fast enumerate historical universe and fetch 2015-2017 K-lines
         shell: bash
         run: |
-          cat > /tmp/extend.py <<'PY'
-          import os,json,time,hashlib,traceback
+          cat > /tmp/extend_fast.py <<'PY'
+          import os,json,time,hashlib,threading
+          from concurrent.futures import ThreadPoolExecutor, as_completed
           from urllib.request import Request,urlopen
           from urllib.parse import urlencode
           from urllib.error import HTTPError
@@ -29,94 +30,88 @@ jobs:
           import numpy as np
           import akshare as ak
 
-          OUT='cb_2015_2017'; RAW=os.path.join(OUT,'raw_sina'); os.makedirs(RAW,exist_ok=True)
+          OUT='cb_2015_2017_fast'; RAW=os.path.join(OUT,'raw_sina');os.makedirs(RAW,exist_ok=True)
           BASE='https://market.ft.tech/gateway/api/v1/market/data/cb/'
-          def get(url):
-              req=Request(url,headers={'User-Agent':'Mozilla/5.0','Accept':'application/json'})
-              try:
-                  with urlopen(req,timeout=30) as r:return r.status,r.read().decode('utf-8','replace')
-              except HTTPError as e:return e.code,e.read().decode('utf-8','replace')
-              except Exception as e:return -1,json.dumps({'exception':type(e).__name__,'message':str(e)},ensure_ascii=False)
-
-          st,raw=get(BASE+'cb-lists')
-          obj=json.loads(raw); items=((obj.get('data') or {}).get('items') or [])
-          print('UNIVERSE_ITEMS',len(items),flush=True)
-          base_rows=[]; base_fail=[]
-          for i,r in enumerate(items,1):
-              code=str(r.get('cb_id')).zfill(6)
-              s,txt=get(BASE+'cb-base-data?'+urlencode({'symbol_code':code}))
-              try:o=json.loads(txt); b=o.get('data') if isinstance(o,dict) else None
+          lock=threading.Lock()
+          def get(url,retries=3):
+              for k in range(retries):
+                  req=Request(url,headers={'User-Agent':'Mozilla/5.0','Accept':'application/json'})
+                  try:
+                      with urlopen(req,timeout=20) as r:return r.status,r.read().decode('utf-8','replace')
+                  except HTTPError as e:
+                      body=e.read().decode('utf-8','replace')
+                      if e.code==429 and k+1<retries: time.sleep(1.5*(k+1));continue
+                      return e.code,body
+                  except Exception as e:
+                      if k+1<retries: time.sleep(0.5*(k+1));continue
+                      return -1,json.dumps({'exception':type(e).__name__,'message':str(e)},ensure_ascii=False)
+          st,raw=get(BASE+'cb-lists');obj=json.loads(raw);items=((obj.get('data') or {}).get('items') or [])
+          print('UNIVERSE',len(items),flush=True)
+          def fetch_base(r):
+              code=str(r.get('cb_id')).zfill(6);s,txt=get(BASE+'cb-base-data?'+urlencode({'symbol_code':code}))
+              try:o=json.loads(txt);b=o.get('data') if isinstance(o,dict) else None
               except:b=None
-              if isinstance(b,dict):
-                  q=dict(b); q['_status']=s; base_rows.append(q)
-              else: base_fail.append({'cb_id':code,'status':s,'raw':txt[:300]})
-              if i%50==0: print('BASE_PROGRESS',i,'/',len(items),'success',len(base_rows),'fail',len(base_fail),flush=True)
-              time.sleep(0.11)
+              return code,s,b,txt[:300]
+          base_rows=[];base_fail=[]
+          with ThreadPoolExecutor(max_workers=3) as ex:
+              futs=[ex.submit(fetch_base,r) for r in items]
+              done=0
+              for fut in as_completed(futs):
+                  code,s,b,err=fut.result();done+=1
+                  if isinstance(b,dict):q=dict(b);q['_status']=s;base_rows.append(q)
+                  else:base_fail.append({'cb_id':code,'status':s,'raw':err})
+                  if done%100==0:print('BASE',done,'/',len(items),'ok',len(base_rows),'fail',len(base_fail),flush=True)
           open(os.path.join(OUT,'base_all.json'),'w',encoding='utf-8').write(json.dumps(base_rows,ensure_ascii=False,indent=2))
           open(os.path.join(OUT,'base_fail.json'),'w',encoding='utf-8').write(json.dumps(base_fail,ensure_ascii=False,indent=2))
-
           cand=[]
           for b in base_rows:
-              ld=b.get('listed_date'); stop=b.get('stop_trading_date') or b.get('de_listed_date') or 99999999
-              try: ld=int(ld) if ld else 99999999; stop=int(stop) if stop else 99999999
-              except: continue
+              try:ld=int(b.get('listed_date') or 99999999);stop=int(b.get('stop_trading_date') or b.get('de_listed_date') or 99999999)
+              except:continue
               if ld<=20171229 and stop>=20150625:
-                  code=str(b.get('cb_id')).zfill(6); exch=b.get('exchange')
-                  symbol=('sh' if exch==3553 else 'sz' if exch==3554 else '')+code
-                  if symbol[:2] in ('sh','sz'):
-                      q=dict(b); q['symbol']=symbol; cand.append(q)
+                  code=str(b.get('cb_id')).zfill(6);exch=b.get('exchange');prefix='sh' if exch==3553 else 'sz' if exch==3554 else ''
+                  if prefix:q=dict(b);q['symbol']=prefix+code;cand.append(q)
+          cand=sorted(cand,key=lambda x:(int(x.get('listed_date') or 0),x['symbol']))
           open(os.path.join(OUT,'candidates.json'),'w',encoding='utf-8').write(json.dumps(cand,ensure_ascii=False,indent=2))
           print('CANDIDATES',len(cand),flush=True)
-          for b in cand: print('CAND',b['symbol'],b.get('cb_name'),b.get('listed_date'),b.get('stop_trading_date'),b.get('de_listed_date'),flush=True)
-
-          start=pd.Timestamp('2015-06-25'); end=pd.Timestamp('2017-12-29')
-          status=[]; parts=[]
+          start=pd.Timestamp('2015-06-25');end=pd.Timestamp('2017-12-29');parts=[];status=[]
           for i,b in enumerate(cand,1):
-              symbol=b['symbol']; code=str(b.get('cb_id')).zfill(6); name=b.get('cb_name') or b.get('full_name') or ''
+              sym=b['symbol'];code=str(b.get('cb_id')).zfill(6);name=b.get('cb_name') or b.get('full_name') or ''
               try:
-                  df=ak.bond_zh_hs_cov_daily(symbol=symbol)
-                  if df is None: df=pd.DataFrame()
-                  if not df.empty and 'date' in df.columns:
-                      df=df.copy(); df['date']=pd.to_datetime(df['date'],errors='coerce')
+                  df=ak.bond_zh_hs_cov_daily(symbol=sym)
+                  if df is None or 'date' not in df.columns:df=pd.DataFrame(columns=['date','open','high','low','close','volume'])
+                  else:
+                      df=df.copy();df['date']=pd.to_datetime(df.date,errors='coerce')
                       for c in ['open','high','low','close','volume']:
-                          if c in df.columns: df[c]=pd.to_numeric(df[c],errors='coerce')
-                      df=df[(df.date>=start)&(df.date<=end)].sort_values('date').drop_duplicates('date',keep='last')
-                  else: df=pd.DataFrame(columns=['date','open','high','low','close','volume'])
-                  save=df.copy(); save['date']=pd.to_datetime(save['date'],errors='coerce').dt.strftime('%Y-%m-%d')
-                  save.to_csv(os.path.join(RAW,f'{symbol}.csv'),index=False,encoding='utf-8-sig')
+                          if c in df:df[c]=pd.to_numeric(df[c],errors='coerce')
+                      df=df[(df.date>=start)&(df.date<=end)].sort_values('date').drop_duplicates('date')
+                  save=df.copy();save['date']=pd.to_datetime(save.date,errors='coerce').dt.strftime('%Y-%m-%d');save.to_csv(os.path.join(RAW,f'{sym}.csv'),index=False,encoding='utf-8-sig')
                   if len(df):
-                      payload=df[[c for c in ['date','open','high','low','close','volume'] if c in df]].to_csv(index=False,date_format='%Y-%m-%d').encode()
-                      h=hashlib.sha256(payload).hexdigest()
-                      p=df[['date','close']+(['volume'] if 'volume' in df else [])].copy()
+                      payload=df[[c for c in ['date','open','high','low','close','volume'] if c in df]].to_csv(index=False,date_format='%Y-%m-%d').encode();h=hashlib.sha256(payload).hexdigest()
+                      p=df[['date','close']+(['volume'] if 'volume' in df else [])].copy();
                       if 'volume' not in p:p['volume']=np.nan
-                      p['bond_code']=code;p['bond_name']=name;p['symbol']=symbol;p['series_hash']=h;parts.append(p)
-                      first=df.date.min().strftime('%Y-%m-%d');last=df.date.max().strftime('%Y-%m-%d')
+                      p['bond_code']=code;p['bond_name']=name;p['symbol']=sym;p['series_hash']=h;parts.append(p);first=df.date.min().strftime('%Y-%m-%d');last=df.date.max().strftime('%Y-%m-%d')
                   else:h='';first='';last=''
-                  status.append({'bond_code':code,'bond_name':name,'symbol':symbol,'rows':len(df),'first_date':first,'last_date':last,'series_hash':h,'ok':True,'error':''})
-              except Exception as e:
-                  status.append({'bond_code':code,'bond_name':name,'symbol':symbol,'rows':0,'first_date':'','last_date':'','series_hash':'','ok':False,'error':repr(e)})
-              print('K_PROGRESS',i,'/',len(cand),symbol,'rows',status[-1]['rows'],'ok',status[-1]['ok'],flush=True)
-              time.sleep(0.20)
-          sdf=pd.DataFrame(status); sdf.to_csv(os.path.join(OUT,'fetch_status.csv'),index=False,encoding='utf-8-sig')
+                  status.append({'bond_code':code,'bond_name':name,'symbol':sym,'rows':len(df),'first_date':first,'last_date':last,'series_hash':h,'ok':True,'error':''})
+              except Exception as e:status.append({'bond_code':code,'bond_name':name,'symbol':sym,'rows':0,'first_date':'','last_date':'','series_hash':'','ok':False,'error':repr(e)})
+              if i%10==0 or i==len(cand):print('K',i,'/',len(cand),'nonempty',sum(x['rows']>0 for x in status),flush=True)
+              time.sleep(0.15)
+          sdf=pd.DataFrame(status);sdf.to_csv(os.path.join(OUT,'fetch_status.csv'),index=False,encoding='utf-8-sig')
           if parts:
-              long=pd.concat(parts,ignore_index=True); long['date']=pd.to_datetime(long.date); long['close']=pd.to_numeric(long.close,errors='coerce');long['volume']=pd.to_numeric(long.volume,errors='coerce')
-              long=long[long.close.notna()&(long.close>0)]
+              long=pd.concat(parts,ignore_index=True);long['date']=pd.to_datetime(long.date);long['close']=pd.to_numeric(long.close,errors='coerce');long['volume']=pd.to_numeric(long.volume,errors='coerce');long=long[long.close.notna()&(long.close>0)]
               long.to_csv(os.path.join(OUT,'daily_long.csv'),index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
-              reps=set(sdf[(sdf.rows>0)&(sdf.series_hash!='')].drop_duplicates('series_hash').symbol); ded=long[long.symbol.isin(reps)].copy()
-              def stats(x):
-                  v=x.close.dropna();t=x.loc[x.volume.fillna(0)>0,'close'].dropna();return pd.Series({'median_close':v.median(),'sample_count':len(v),'traded_median_close':t.median() if len(t) else np.nan,'traded_sample_count':len(t)})
-              med=ded.groupby('date',sort=True).apply(stats,include_groups=False).reset_index();med.to_csv(os.path.join(OUT,'median_daily.csv'),index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
-              summ={'universe_items':len(items),'base_success':len(base_rows),'base_fail':len(base_fail),'candidates':len(cand),'kline_nonempty':int((sdf.rows>0).sum()),'kline_empty_or_fail':int((sdf.rows==0).sum()),'daily_rows':len(long),'median_days':len(med),'first_date':med.date.min().strftime('%Y-%m-%d') if len(med) else None,'last_date':med.date.max().strftime('%Y-%m-%d') if len(med) else None}
-          else:summ={'universe_items':len(items),'base_success':len(base_rows),'base_fail':len(base_fail),'candidates':len(cand),'kline_nonempty':0}
+              reps=set(sdf[(sdf.rows>0)&(sdf.series_hash!='')].drop_duplicates('series_hash').symbol);ded=long[long.symbol.isin(reps)]
+              med=ded.groupby('date').agg(median_close=('close','median'),sample_count=('close','count')).reset_index();med.to_csv(os.path.join(OUT,'median_daily.csv'),index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
+              summ={'universe':len(items),'base_success':len(base_rows),'base_fail':len(base_fail),'candidates':len(cand),'kline_nonempty':int((sdf.rows>0).sum()),'daily_rows':len(long),'median_days':len(med),'first_date':med.date.min().strftime('%Y-%m-%d') if len(med) else None,'last_date':med.date.max().strftime('%Y-%m-%d') if len(med) else None}
+          else:summ={'universe':len(items),'base_success':len(base_rows),'base_fail':len(base_fail),'candidates':len(cand),'kline_nonempty':0}
           print('FINAL_SUMMARY='+json.dumps(summ,ensure_ascii=False),flush=True);open(os.path.join(OUT,'summary.json'),'w',encoding='utf-8').write(json.dumps(summ,ensure_ascii=False,indent=2))
           PY
-          python /tmp/extend.py
+          python /tmp/extend_fast.py
 
-      - name: Upload 2015-2017 extension
+      - name: Upload fast extension
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cb-2015-2017-extension
-          path: cb_2015_2017/
+          name: cb-2015-2017-extension-fast
+          path: cb_2015_2017_fast/
           if-no-files-found: warn
           compression-level: 6

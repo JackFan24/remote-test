@@ -1,0 +1,58 @@
+name: cb-five-missing
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cb-five-missing.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-five-missing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install AKShare
+        run: python -m pip install -q --disable-pip-version-check akshare
+      - name: Fetch five missing historical convertibles
+        shell: bash
+        run: |
+          cat > /tmp/five.py <<'PY'
+          import os,json,hashlib
+          import pandas as pd
+          import akshare as ak
+          os.makedirs('cb_five',exist_ok=True)
+          names={'110021':'上电转债','110325':'华发转债','110398':'凯诺转债','110423':'柳化转债','110488':'天药转债'}
+          parts=[];status=[]
+          for code,name in names.items():
+              sym='sh'+code
+              try:
+                  df=ak.bond_zh_hs_cov_daily(symbol=sym)
+                  if df is None or 'date' not in df.columns: df=pd.DataFrame()
+                  else:
+                      df=df.copy();df['date']=pd.to_datetime(df.date,errors='coerce')
+                      for c in ['open','high','low','close','volume']:
+                          if c in df: df[c]=pd.to_numeric(df[c],errors='coerce')
+                      df=df[df.date<=pd.Timestamp('2017-12-29')].sort_values('date').drop_duplicates('date')
+                  df.to_csv(f'cb_five/{sym}.csv',index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
+                  if len(df):
+                      p=df[['date','close']+(['volume'] if 'volume' in df else [])].copy()
+                      if 'volume' not in p:p['volume']=None
+                      p['bond_code']=code;p['bond_name']=name;p['symbol']=sym;parts.append(p)
+                      status.append({'code':code,'name':name,'symbol':sym,'rows':len(df),'first':df.date.min().strftime('%Y-%m-%d'),'last':df.date.max().strftime('%Y-%m-%d'),'ok':True})
+                  else:status.append({'code':code,'name':name,'symbol':sym,'rows':0,'first':'','last':'','ok':False})
+              except Exception as e:status.append({'code':code,'name':name,'symbol':sym,'rows':0,'first':'','last':'','ok':False,'error':repr(e)})
+              print(status[-1],flush=True)
+          if parts: pd.concat(parts,ignore_index=True).to_csv('cb_five/daily_long.csv',index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
+          open('cb_five/status.json','w',encoding='utf-8').write(json.dumps(status,ensure_ascii=False,indent=2))
+          PY
+          python /tmp/five.py
+      - name: Upload five
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cb-five-missing
+          path: cb_five/
+          if-no-files-found: warn

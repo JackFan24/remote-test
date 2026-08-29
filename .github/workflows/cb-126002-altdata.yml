@@ -1,0 +1,60 @@
+name: cb-126002-altdata
+on:
+  push:
+    paths: ['.github/workflows/cb-126002-altdata.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test-alt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install sources
+        run: python -m pip install -q --disable-pip-version-check baostock pytdx
+      - name: Query old 126002
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os,json,traceback
+          os.makedirs('alt126002',exist_ok=True)
+          # Baostock
+          try:
+              import baostock as bs
+              lg=bs.login(); print('BAOSTOCK_LOGIN',lg.error_code,lg.error_msg,flush=True)
+              rs=bs.query_history_k_data_plus('sz.126002','date,code,open,high,low,close,volume,amount','2005-02-20','2005-05-15',frequency='d',adjustflag='3')
+              rows=[]
+              while rs.error_code=='0' and rs.next(): rows.append(rs.get_row_data())
+              print('BAOSTOCK_ROWS',len(rows),rows[:3],rows[-3:] if rows else [],flush=True)
+              open('alt126002/baostock.json','w').write(json.dumps(rows,ensure_ascii=False))
+              bs.logout()
+          except Exception as e: print('BAOSTOCK_ERR',repr(e),traceback.format_exc()[-1000:],flush=True)
+          # pytdx public servers
+          try:
+              from pytdx.hq import TdxHq_API
+              servers=[('119.147.212.81',7709),('119.147.212.81',7721),('39.98.234.173',7709),('218.75.126.9',7709),('115.238.56.198',7709)]
+              for host,port in servers:
+                  api=TdxHq_API(heartbeat=True,auto_retry=True,raise_exception=False)
+                  try:
+                      ok=api.connect(host,port,time_out=4)
+                      print('TDX_CONNECT',host,port,ok,flush=True)
+                      if ok:
+                          # retrieve chunks; category 9=daily, market 0=SZ
+                          allb=[]
+                          for start in [0,800,1600,2400,3200,4000]:
+                              b=api.get_security_bars(9,0,'126002',start,800) or []
+                              allb.extend(b)
+                          # dedupe and filter 2004-2006
+                          uniq={str(r.get('datetime')):r for r in allb}
+                          filt=[r for k,r in sorted(uniq.items()) if '2004-'<=k[:5]<='2006-']
+                          print('TDX_ROWS',host,len(uniq),'FILT',len(filt),'HEAD',filt[:3],'TAIL',filt[-3:] if filt else [],flush=True)
+                          open(f'alt126002/tdx_{host.replace(".","_")}_{port}.json','w').write(json.dumps(filt,ensure_ascii=False,default=str))
+                          api.disconnect()
+                          if filt: break
+                  except Exception as e: print('TDX_SERVER_ERR',host,repr(e),flush=True)
+          except Exception as e: print('TDX_ERR',repr(e),traceback.format_exc()[-1000:],flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cb-126002-altdata
+          path: alt126002/

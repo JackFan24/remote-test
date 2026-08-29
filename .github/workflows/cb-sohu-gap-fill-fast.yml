@@ -1,0 +1,95 @@
+name: cb-sohu-gap-fill-fast
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cb-sohu-gap-fill-fast.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fill-gaps-fast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch Sohu historical K-lines concurrently
+        shell: bash
+        run: |
+          python - <<'PY'
+          import csv, json, os, re, time
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from urllib.request import Request, urlopen
+          from urllib.parse import urlencode
+          from urllib.error import HTTPError
+
+          WINDOWS = [
+            {"start":"2005-03-01","end":"2005-05-13","symbols":["sh100016","sh100087","sh100096","sh100117","sh100177","sh100196","sh100220","sh100236","sh100567","sh100726","sh100795","sh110001","sh110010","sh110036","sh110037","sh110219","sh110317","sh110418","sh110874","sz125069","sz125488","sz125630","sz125729","sz125822","sz125930","sz125932","sz125936","sz125937","sz125959","sz126002","sz126301"]},
+            {"start":"2005-10-25","end":"2005-10-31","symbols":["sh100016","sh100087","sh100096","sh100117","sh100177","sh100196","sh100236","sh100567","sh100726","sh100795","sh110001","sh110010","sh110036","sh110037","sh110219","sh110317","sh110418","sh110874","sz125488","sz125729","sz125822","sz125932","sz125936","sz125959","sz126002","sz126301"]},
+            {"start":"2006-09-04","end":"2006-09-11","symbols":["sh100087","sh100117","sh100236","sh100726","sh100795","sh110001","sh110036","sh110317","sh110325","sh110398","sh110423","sh110874","sz125024","sz125488","sz125822","sz125932","sz125959","sz126002","sz126301"]},
+            {"start":"2010-06-21","end":"2010-06-25","symbols":["sh110003","sh110004","sh110007","sh110008","sh110009","sh110078","sh113001","sz125528","sz125572","sz125709","sz125731","sz125960","sz126002","sz128031"]},
+            {"start":"2012-07-27","end":"2012-07-31","symbols":["sh110003","sh110007","sh110011","sh110012","sh110013","sh110015","sh110016","sh110017","sh110018","sh110019","sh113001","sh113002","sh113003","sz125089","sz125528","sz125572","sz125709","sz125731","sz125887","sz125960","sz126002","sz126729","sz128031","sz129031"]}
+          ]
+          OUT='sohu_gap_fill_fast'; os.makedirs(OUT,exist_ok=True)
+          jobs=[]
+          for w in WINDOWS:
+              for sym in w['symbols']:
+                  jobs.append((sym,w['start'],w['end']))
+
+          def parse_num(x):
+              try:return float(str(x).replace(',','').replace('%',''))
+              except:return None
+
+          def fetch(job):
+              sym,start,end=job; code=sym[2:]
+              params={'code':'cn_'+code,'start':start.replace('-',''),'end':end.replace('-',''),'stat':'1','order':'D','period':'d','callback':'historySearchHandler','rt':'jsonp'}
+              url='https://q.stock.sohu.com/hisHq?'+urlencode(params)
+              last=''
+              for attempt in range(3):
+                  req=Request(url,headers={'User-Agent':'Mozilla/5.0','Referer':f'https://q.stock.sohu.com/cn/{code}/lshq.shtml'})
+                  try:
+                      with urlopen(req,timeout=18) as r: txt=r.read().decode('utf-8','replace'); http=r.status
+                  except HTTPError as e:
+                      http=e.code; txt=e.read().decode('utf-8','replace')
+                  except Exception as e:
+                      http=-1; txt=repr(e)
+                  last=txt
+                  if http==200:
+                      m=re.search(r'historySearchHandler\((.*)\)\s*;?\s*$',txt,re.S); payload=m.group(1) if m else txt
+                      try: obj=json.loads(payload)
+                      except: obj=None
+                      out=[]
+                      blocks=obj if isinstance(obj,list) else [obj] if isinstance(obj,dict) else []
+                      for b in blocks:
+                          if not isinstance(b,dict): continue
+                          for h in b.get('hq') or []:
+                              if not isinstance(h,list) or len(h)<8: continue
+                              out.append({'date':str(h[0])[:10],'symbol':sym,'bond_code':code,'open':parse_num(h[1]),'close':parse_num(h[2]),'low':parse_num(h[5]),'high':parse_num(h[6]),'volume':parse_num(h[7]),'amount':parse_num(h[8]) if len(h)>8 else None,'window_start':start,'window_end':end})
+                      return {'symbol':sym,'start':start,'end':end,'http':http,'rows':out,'raw_head':txt[:300].replace('\n',' ')}
+                  time.sleep(0.4*(attempt+1))
+              return {'symbol':sym,'start':start,'end':end,'http':http,'rows':[],'raw_head':last[:300].replace('\n',' ')}
+
+          results=[]
+          with ThreadPoolExecutor(max_workers=6) as ex:
+              futs=[ex.submit(fetch,j) for j in jobs]
+              for i,f in enumerate(as_completed(futs),1):
+                  r=f.result(); results.append(r)
+                  print(f'[{i}/{len(jobs)}] {r["symbol"]} {r["start"]}..{r["end"]} http={r["http"]} rows={len(r["rows"])}',flush=True)
+
+          rows=[]; status=[]
+          for r in results:
+              rows.extend(r['rows']); status.append({'symbol':r['symbol'],'start':r['start'],'end':r['end'],'http':r['http'],'rows':len(r['rows']),'raw_head':r['raw_head']})
+          rows.sort(key=lambda x:(x['date'],x['symbol']))
+          status.sort(key=lambda x:(x['start'],x['symbol']))
+          with open(os.path.join(OUT,'sohu_rows.csv'),'w',newline='',encoding='utf-8-sig') as f:
+              fields=['date','symbol','bond_code','open','high','low','close','volume','amount','window_start','window_end'];w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(rows)
+          with open(os.path.join(OUT,'fetch_status.csv'),'w',newline='',encoding='utf-8-sig') as f:
+              fields=['symbol','start','end','http','rows','raw_head'];w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(status)
+          print('TOTAL_ROWS',len(rows),'REQUESTS',len(status),'HTTP200',sum(s['http']==200 for s in status),flush=True)
+          PY
+      - name: Upload Sohu gap data
+        uses: actions/upload-artifact@v4
+        with:
+          name: cb-sohu-gap-fill-fast
+          path: sohu_gap_fill_fast/

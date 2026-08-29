@@ -10,118 +10,69 @@ permissions:
   contents: read
 
 jobs:
-  fetch-all-83-legacy-cb:
+  enumerate-ftshare-cb-universe:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
-      - name: Install AKShare
-        run: python -m pip install -q --disable-pip-version-check akshare
-
-      - name: Fetch all 83 legacy convertible bonds and build daily medians
+      - name: Fetch FTShare CB list and historical base metadata
         shell: bash
         run: |
-          cat > /tmp/fetch83.py <<'PY'
-          import os, json, time, hashlib, traceback
-          import pandas as pd
-          import numpy as np
-          import akshare as ak
+          cat > /tmp/universe.py <<'PY'
+          import json, os, time
+          from urllib.request import Request, urlopen
+          from urllib.parse import urlencode
+          from urllib.error import HTTPError
 
-          SEED = [
-          ('100016','民生转债','sh100016'),('100087','水运转债','sh100087'),('100096','云化转债','sh100096'),('100117','西钢转债','sh100117'),('100177','雅戈转债','sh100177'),('100196','复星转债','sh100196'),('100236','桂冠转债','sh100236'),('100567','山鹰转债','sh100567'),('100726','华电转债','sh100726'),('100795','国电转债','sh100795'),
-          ('110001','邯钢转债','sh110001'),('110002','南山转债','sh110002'),('110003','新钢转债','sh110003'),('110004','厦工转债','sh110004'),('110005','西洋转债','sh110005'),('110008','王府转债','sh110008'),('110009','双良转债','sh110009'),('110010','包钢转债','sh110010'),('110011','歌华转债','sh110011'),('110012','海运转债','sh110012'),('110013','国投转债','sh110013'),('110015','石化转债','sh110015'),('110016','川投转债','sh110016'),('110017','中海转债','sh110017'),('110018','国电转债','sh110018'),('110019','恒丰转债','sh110019'),('110022','同仁转债','sh110022'),('110023','民生转债','sh110023'),('110024','隧道转债','sh110024'),('110026','中海转债','sh110026'),('110036','招行转债','sh110036'),('110037','歌华转债','sh110037'),('110078','澄星转债','sh110078'),('110219','南山转债','sh110219'),('110227','赤化转债','sh110227'),('110232','金鹰转债','sh110232'),('110317','营港转债','sh110317'),('110352','龙盛转债','sh110352'),('110368','五洲转债','sh110368'),('110418','江淮转债','sh110418'),('110567','山鹰转债','sh110567'),('110598','大荒转债','sh110598'),('110815','厦工转债','sh110815'),('110874','创业转债','sh110874'),('110966','博汇转债','sh110966'),('110971','恒源转债','sh110971'),('113001','中行转债','sh113001'),('113002','工行转债','sh113002'),('113003','重工转债','sh113003'),('113005','平安转债','sh113005'),('113006','深圳转债','sh113006'),
-          ('125069','侨城转债','sz125069'),('125089','深机转债','sz125089'),('125488','晨鸣转债','sz125488'),('125528','柳工转债','sz125528'),('125572','海马转债','sz125572'),('125630','铜都转债','sz125630'),('125709','唐钢转债','sz125709'),('125729','燕京转债','sz125729'),('125731','美丰转债','sz125731'),('125822','海化转债','sz125822'),('125887','中鼎转债','sz125887'),('125898','鞍钢转债','sz125898'),('125930','丰原转债','sz125930'),('125932','华菱转债','sz125932'),('125936','华西转债','sz125936'),('125937','金牛转债','sz125937'),('125959','首钢转债','sz125959'),('125960','锡业转债','sz125960'),('125969','安泰转债','sz125969'),('126002','万科转2','sz126002'),('126301','丝绸转2','sz126301'),('126630','铜陵转债','sz126630'),('126729','燕京转债','sz126729'),('127001','海直转债','sz127001'),('127002','徐工转债','sz127002'),('128001','泰尔转债','sz128001'),('128002','东华转债','sz128002'),('128003','华天转债','sz128003'),('128004','久立转债','sz128004'),('128031','巨轮转债','sz128031'),('128233','塔牌转债','sz128233'),('129031','巨轮转2','sz129031')]
-
-          OUT='cb83'; RAW=os.path.join(OUT,'raw_sina'); os.makedirs(RAW,exist_ok=True)
-          status=[]; long_parts=[]
-          start=pd.Timestamp('2002-01-01'); end=pd.Timestamp('2017-12-29')
-
-          for i,(code,name,symbol) in enumerate(SEED,1):
+          BASE='https://market.ft.tech/gateway/api/v1/market/data/cb/'
+          os.makedirs('cb_universe',exist_ok=True)
+          def get(url):
+              req=Request(url,headers={'User-Agent':'Mozilla/5.0','Accept':'application/json'})
               try:
-                  df=ak.bond_zh_hs_cov_daily(symbol=symbol)
-                  if df is None: df=pd.DataFrame()
-                  if not df.empty:
-                      df=df.copy()
-                      df['date']=pd.to_datetime(df['date'],errors='coerce')
-                      for c in ['open','high','low','close','volume']:
-                          if c in df.columns: df[c]=pd.to_numeric(df[c],errors='coerce')
-                      df=df[(df['date']>=start)&(df['date']<=end)].sort_values('date').drop_duplicates('date',keep='last')
-                  save=df.copy()
-                  if 'date' in save.columns: save['date']=save['date'].dt.strftime('%Y-%m-%d')
-                  save.to_csv(os.path.join(RAW,f'{symbol}.csv'),index=False,encoding='utf-8-sig')
-                  if len(df):
-                      hash_cols=[c for c in ['date','open','high','low','close','volume'] if c in df.columns]
-                      payload=df[hash_cols].to_csv(index=False,date_format='%Y-%m-%d').encode()
-                      series_hash=hashlib.sha256(payload).hexdigest()
-                      part=df[['date','close']+(['volume'] if 'volume' in df.columns else [])].copy()
-                      if 'volume' not in part.columns: part['volume']=np.nan
-                      part['bond_code']=code; part['bond_name']=name; part['symbol']=symbol; part['series_hash']=series_hash
-                      long_parts.append(part)
-                      first=df['date'].min().strftime('%Y-%m-%d'); last=df['date'].max().strftime('%Y-%m-%d')
-                  else:
-                      series_hash=''; first=''; last=''
-                  status.append({'bond_code':code,'bond_name':name,'symbol':symbol,'ok':True,'rows':len(df),'first_date':first,'last_date':last,'series_hash':series_hash,'error':''})
-              except Exception as e:
-                  status.append({'bond_code':code,'bond_name':name,'symbol':symbol,'ok':False,'rows':0,'first_date':'','last_date':'','series_hash':'','error':repr(e)})
-              print(f'[{i:02d}/83] {symbol} {name}: rows={status[-1]["rows"]} ok={status[-1]["ok"]}',flush=True)
-              time.sleep(0.20)
+                  with urlopen(req,timeout=30) as r:return r.status,r.read().decode('utf-8','replace')
+              except HTTPError as e:return e.code,e.read().decode('utf-8','replace')
+              except Exception as e:return -1,json.dumps({'exception':type(e).__name__,'message':str(e)},ensure_ascii=False)
 
-          sdf=pd.DataFrame(status)
-          sdf.to_csv(os.path.join(OUT,'fetch_status_83.csv'),index=False,encoding='utf-8-sig')
-          if long_parts:
-              long=pd.concat(long_parts,ignore_index=True)
-              long['date']=pd.to_datetime(long['date'])
-              long['close']=pd.to_numeric(long['close'],errors='coerce')
-              long['volume']=pd.to_numeric(long['volume'],errors='coerce')
-              long=long[long['close'].notna() & (long['close']>0)]
-              long.to_csv(os.path.join(OUT,'daily_long_raw83.csv'),index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
-
-              # exact full-series duplicate detection. Identical hashes are aliases/copies and only one representative is used in dedup median.
-              valid_hash=sdf[(sdf['rows']>0)&(sdf['series_hash']!='')]
-              dup_groups=[]
-              for h,g in valid_hash.groupby('series_hash'):
-                  if len(g)>1:
-                      dup_groups.append({'series_hash':h,'n':len(g),'symbols':'|'.join(g['symbol']),'names':'|'.join(g['bond_name']),'first_dates':'|'.join(g['first_date']),'last_dates':'|'.join(g['last_date'])})
-              pd.DataFrame(dup_groups).to_csv(os.path.join(OUT,'exact_duplicate_series.csv'),index=False,encoding='utf-8-sig')
-              representatives=set(valid_hash.drop_duplicates('series_hash',keep='first')['symbol'])
-              dedup=long[long['symbol'].isin(representatives)].copy()
-              dedup.to_csv(os.path.join(OUT,'daily_long_hash_dedup.csv'),index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
-
-              def daily_stats(x):
-                  vals=x['close'].dropna()
-                  traded=x.loc[x['volume'].fillna(0)>0,'close'].dropna()
-                  return pd.Series({'median_close':vals.median() if len(vals) else np.nan,'sample_count':len(vals),'traded_median_close':traded.median() if len(traded) else np.nan,'traded_sample_count':len(traded)})
-              rawmed=long.groupby('date',sort=True).apply(daily_stats,include_groups=False).reset_index()
-              dedmed=dedup.groupby('date',sort=True).apply(daily_stats,include_groups=False).reset_index()
-              rawmed.to_csv(os.path.join(OUT,'median_daily_raw83.csv'),index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
-              dedmed.to_csv(os.path.join(OUT,'median_daily_hash_dedup.csv'),index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
-
-              # QA against independently known MARKET-KLINE values and historical median anchors.
-              qa=[]
-              market_close_anchors={('2012-03-30','sh110003'):103.33,('2012-03-30','sz125731'):109.859,('2012-03-30','sh113001'):95.25}
-              for (d,sym),exp in market_close_anchors.items():
-                  hit=long[(long['date']==pd.Timestamp(d))&(long['symbol']==sym)]
-                  act=float(hit.iloc[0]['close']) if len(hit) else np.nan
-                  qa.append({'type':'bond_close','date':d,'symbol':sym,'actual':act,'expected':exp,'diff':act-exp if pd.notna(act) else np.nan,'pass':bool(pd.notna(act) and abs(act-exp)<=0.002)})
-              median_anchors=[('2005-06-10',104.000,0.01,29),('2006-03-02',106.79,0.02,19),('2008-11-14',106.5,0.05,13),('2012-06-27',104.615,1.0,None),('2012-08-15',104.67,1.0,20),('2012-10-31',101.223,1.0,None),('2012-11-21',100.12,1.0,None),('2013-01-16',105.475,1.0,None),('2013-03-28',110.7855,1.0,None)]
-              for d,exp,tol,nexp in median_anchors:
-                  hit=dedmed[dedmed['date']==pd.Timestamp(d)]
-                  act=float(hit.iloc[0]['median_close']) if len(hit) else np.nan; n=int(hit.iloc[0]['sample_count']) if len(hit) else 0
-                  qa.append({'type':'median','date':d,'symbol':'','actual':act,'expected':exp,'diff':act-exp if pd.notna(act) else np.nan,'pass':bool(pd.notna(act) and abs(act-exp)<=tol),'sample_count':n,'expected_n':nexp})
-              pd.DataFrame(qa).to_csv(os.path.join(OUT,'anchor_qa.csv'),index=False,encoding='utf-8-sig')
-
-              summary={'seed_count':83,'success_bonds':int((sdf.rows>0).sum()),'failed_or_empty':int((sdf.rows==0).sum()),'raw_daily_rows':int(len(long)),'hash_dedup_daily_rows':int(len(dedup)),'median_days_raw':int(len(rawmed)),'median_days_hash_dedup':int(len(dedmed)),'exact_duplicate_groups':len(dup_groups),'first_date':dedmed.date.min().strftime('%Y-%m-%d') if len(dedmed) else None,'last_date':dedmed.date.max().strftime('%Y-%m-%d') if len(dedmed) else None,'qa_pass':int(pd.DataFrame(qa)['pass'].sum()),'qa_total':len(qa)}
-          else:
-              summary={'seed_count':83,'success_bonds':0,'failed_or_empty':83}
-          print('FINAL_SUMMARY='+json.dumps(summary,ensure_ascii=False),flush=True)
-          open(os.path.join(OUT,'summary.json'),'w',encoding='utf-8').write(json.dumps(summary,ensure_ascii=False,indent=2))
+          st,raw=get(BASE+'cb-lists')
+          open('cb_universe/cb_lists_raw.json','w',encoding='utf-8').write(raw)
+          try: obj=json.loads(raw)
+          except: obj={}
+          data=obj.get('data') if isinstance(obj,dict) else None
+          print('LIST_STATUS',st,'LIST_TYPE',type(data).__name__,'LIST_N',len(data) if isinstance(data,list) else None,flush=True)
+          if isinstance(data,list):
+              print('LIST_FIRST',json.dumps(data[:5],ensure_ascii=False),flush=True)
+              print('LIST_LAST',json.dumps(data[-5:],ensure_ascii=False),flush=True)
+          rows=[]
+          # If list is reasonably sized, inspect every code's base metadata and filter historical 2015-2017 overlap.
+          if isinstance(data,list):
+              for i,r in enumerate(data,1):
+                  code=r.get('cb_id') if isinstance(r,dict) else None
+                  if code is None: continue
+                  s,txt=get(BASE+'cb-base-data?'+urlencode({'symbol_code':str(code)}))
+                  try:o=json.loads(txt); b=o.get('data') if isinstance(o,dict) else None
+                  except:b=None
+                  if isinstance(b,dict):
+                      rec=dict(b); rec['_status']=s; rows.append(rec)
+                  if i%25==0: print('BASE_PROGRESS',i,'/',len(data),flush=True)
+                  time.sleep(0.08)
+          open('cb_universe/base_all.json','w',encoding='utf-8').write(json.dumps(rows,ensure_ascii=False,indent=2))
+          cand=[]
+          for b in rows:
+              ld=b.get('listed_date'); stop=b.get('stop_trading_date') or b.get('de_listed_date') or 99999999
+              try: ld=int(ld) if ld else 99999999; stop=int(stop) if stop else 99999999
+              except: continue
+              if ld<=20171229 and stop>=20150625:
+                  cand.append(b)
+          open('cb_universe/candidates_2015_2017.json','w',encoding='utf-8').write(json.dumps(cand,ensure_ascii=False,indent=2))
+          print('BASE_ROWS',len(rows),'CANDIDATES_2015_2017',len(cand),flush=True)
+          for b in cand:
+              print('CAND',b.get('cb_id'),b.get('cb_name'),b.get('listed_date'),b.get('stop_trading_date'),b.get('de_listed_date'),b.get('exchange'),flush=True)
           PY
-          python /tmp/fetch83.py
+          python /tmp/universe.py
 
-      - name: Upload 83-bond reconstruction
+      - name: Upload universe metadata
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cb83-sina-daily-reconstruction
-          path: cb83/
+          name: cb-ftshare-universe
+          path: cb_universe/
           if-no-files-found: warn
-          compression-level: 6

@@ -1,0 +1,71 @@
+name: cb-early-six
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cb-early-six.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-early-six:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install AKShare
+        run: python -m pip install -q --disable-pip-version-check akshare
+      - name: Fetch six early convertible bonds
+        shell: bash
+        run: |
+          cat > /tmp/early6.py <<'PY'
+          import os,json
+          import pandas as pd
+          import akshare as ak
+
+          OUT='cb_early6'; os.makedirs(OUT,exist_ok=True)
+          bonds={
+            'sh100009':'机场转债',
+            'sz125302':'茂炼转债',
+            'sh100220':'阳光转债',
+            'sz125002':'万科转债',
+            'sz125629':'钢钒转债',
+            'sz125024':'招商转债',
+          }
+          parts=[]; status=[]
+          for sym,name in bonds.items():
+              code=sym[2:]
+              try:
+                  df=ak.bond_zh_hs_cov_daily(symbol=sym)
+                  if df is None or 'date' not in df.columns:
+                      df=pd.DataFrame()
+                  else:
+                      df=df.copy(); df['date']=pd.to_datetime(df['date'],errors='coerce')
+                      for c in ['open','high','low','close','volume']:
+                          if c in df.columns: df[c]=pd.to_numeric(df[c],errors='coerce')
+                      df=df[df['date']<=pd.Timestamp('2017-12-29')].sort_values('date').drop_duplicates('date',keep='last')
+                  df.to_csv(f'{OUT}/{sym}.csv',index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
+                  if len(df):
+                      p=df[['date','close']+(['volume'] if 'volume' in df.columns else [])].copy()
+                      if 'volume' not in p.columns: p['volume']=None
+                      p['bond_code']=code; p['bond_name']=name; p['symbol']=sym
+                      parts.append(p)
+                      rec={'symbol':sym,'code':code,'name':name,'rows':len(df),'first':df['date'].min().strftime('%Y-%m-%d'),'last':df['date'].max().strftime('%Y-%m-%d'),'ok':True}
+                  else:
+                      rec={'symbol':sym,'code':code,'name':name,'rows':0,'first':'','last':'','ok':False}
+              except Exception as e:
+                  rec={'symbol':sym,'code':code,'name':name,'rows':0,'first':'','last':'','ok':False,'error':repr(e)}
+              status.append(rec); print(json.dumps(rec,ensure_ascii=False),flush=True)
+          if parts:
+              pd.concat(parts,ignore_index=True).to_csv(f'{OUT}/daily_long.csv',index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
+          open(f'{OUT}/status.json','w',encoding='utf-8').write(json.dumps(status,ensure_ascii=False,indent=2))
+          PY
+          python /tmp/early6.py
+      - name: Upload early six
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cb-early-six
+          path: cb_early6/
+          if-no-files-found: warn

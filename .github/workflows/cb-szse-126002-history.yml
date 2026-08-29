@@ -1,0 +1,47 @@
+name: cb-szse-126002-history
+on:
+  push:
+    paths: ['.github/workflows/cb-szse-126002-history.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  query:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Query official SZSE historical endpoints for 126002
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          os.makedirs('szse126002',exist_ok=True)
+          UA={'User-Agent':'Mozilla/5.0','Referer':'https://www.szse.cn/market/trend/index.html','Accept':'application/json,text/plain,*/*'}
+          urls=[]
+          urls.append(('history', 'https://www.szse.cn/api/market/ssjjhq/getHistoryData?'+urllib.parse.urlencode({'cycleType':'32','marketId':'1','code':'126002','random':'0.5'})))
+          for radio in ['00,20,30','00,20,30,40','00,20,30,40,50','10,11,12,13,14,15,16,17,18,19,20,30']:
+              q={'SHOWTYPE':'JSON','CATALOGID':'1815_stock','TABKEY':'tab1','txtDMorJC':'126002','txtBeginDate':'2005-03-01','txtEndDate':'2005-05-13','radioClass':radio,'txtSite':'all','tab1PAGENO':'1','tab1PAGESIZE':'10000','random':'0.5'}
+              urls.append((f'report_{radio.replace(",","_")}', 'https://www.szse.cn/api/report/ShowReport/data?'+urllib.parse.urlencode(q)))
+          # all-market daily snapshot on target dates, large page; grep 126002
+          for d in ['2005-03-10','2005-03-24','2005-04-12','2005-05-11','2005-10-28']:
+              q={'SHOWTYPE':'JSON','CATALOGID':'1815_stock','TABKEY':'tab1','txtBeginDate':d,'txtEndDate':d,'radioClass':'00,20,30','txtSite':'all','tab1PAGENO':'1','tab1PAGESIZE':'10000','random':'0.5'}
+              urls.append((f'snapshot_{d}', 'https://www.szse.cn/api/report/ShowReport/data?'+urllib.parse.urlencode(q)))
+          summary=[]
+          for name,url in urls:
+              try:
+                  req=urllib.request.Request(url,headers=UA)
+                  with urllib.request.urlopen(req,timeout=30) as r:
+                      raw=r.read(); status=r.status; ct=r.headers.get('Content-Type','')
+                  text=raw.decode('utf-8','replace')
+              except Exception as e:
+                  status=-1;ct='';text=repr(e)
+              open(f'szse126002/{name}.txt','w',encoding='utf-8').write(text)
+              hits=text.count('126002')
+              print(name,'status',status,'bytes',len(text.encode()),'hits126002',hits,'head',text[:200].replace('\n',' '),flush=True)
+              summary.append({'name':name,'status':status,'bytes':len(text.encode()),'hits126002':hits,'content_type':ct,'url':url})
+          open('szse126002/summary.json','w',encoding='utf-8').write(json.dumps(summary,ensure_ascii=False,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cb-szse-126002-history
+          path: szse126002/

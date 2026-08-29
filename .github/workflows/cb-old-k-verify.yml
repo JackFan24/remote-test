@@ -10,21 +10,27 @@ permissions:
   contents: read
 
 jobs:
-  enumerate-ftshare-cb-universe:
+  extend-2015-2017-cb-universe:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
-      - name: Fetch FTShare CB list and historical base metadata
+      - name: Install AKShare
+        run: python -m pip install -q --disable-pip-version-check akshare
+
+      - name: Enumerate 1039 historical CBs and fetch 2015-2017 daily K-lines
         shell: bash
         run: |
-          cat > /tmp/universe.py <<'PY'
-          import json, os, time
-          from urllib.request import Request, urlopen
+          cat > /tmp/extend.py <<'PY'
+          import os,json,time,hashlib,traceback
+          from urllib.request import Request,urlopen
           from urllib.parse import urlencode
           from urllib.error import HTTPError
+          import pandas as pd
+          import numpy as np
+          import akshare as ak
 
+          OUT='cb_2015_2017'; RAW=os.path.join(OUT,'raw_sina'); os.makedirs(RAW,exist_ok=True)
           BASE='https://market.ft.tech/gateway/api/v1/market/data/cb/'
-          os.makedirs('cb_universe',exist_ok=True)
           def get(url):
               req=Request(url,headers={'User-Agent':'Mozilla/5.0','Accept':'application/json'})
               try:
@@ -33,46 +39,84 @@ jobs:
               except Exception as e:return -1,json.dumps({'exception':type(e).__name__,'message':str(e)},ensure_ascii=False)
 
           st,raw=get(BASE+'cb-lists')
-          open('cb_universe/cb_lists_raw.json','w',encoding='utf-8').write(raw)
-          try: obj=json.loads(raw)
-          except: obj={}
-          data=obj.get('data') if isinstance(obj,dict) else None
-          print('LIST_STATUS',st,'LIST_TYPE',type(data).__name__,'LIST_N',len(data) if isinstance(data,list) else None,flush=True)
-          if isinstance(data,list):
-              print('LIST_FIRST',json.dumps(data[:5],ensure_ascii=False),flush=True)
-              print('LIST_LAST',json.dumps(data[-5:],ensure_ascii=False),flush=True)
-          rows=[]
-          # If list is reasonably sized, inspect every code's base metadata and filter historical 2015-2017 overlap.
-          if isinstance(data,list):
-              for i,r in enumerate(data,1):
-                  code=r.get('cb_id') if isinstance(r,dict) else None
-                  if code is None: continue
-                  s,txt=get(BASE+'cb-base-data?'+urlencode({'symbol_code':str(code)}))
-                  try:o=json.loads(txt); b=o.get('data') if isinstance(o,dict) else None
-                  except:b=None
-                  if isinstance(b,dict):
-                      rec=dict(b); rec['_status']=s; rows.append(rec)
-                  if i%25==0: print('BASE_PROGRESS',i,'/',len(data),flush=True)
-                  time.sleep(0.08)
-          open('cb_universe/base_all.json','w',encoding='utf-8').write(json.dumps(rows,ensure_ascii=False,indent=2))
+          obj=json.loads(raw); items=((obj.get('data') or {}).get('items') or [])
+          print('UNIVERSE_ITEMS',len(items),flush=True)
+          base_rows=[]; base_fail=[]
+          for i,r in enumerate(items,1):
+              code=str(r.get('cb_id')).zfill(6)
+              s,txt=get(BASE+'cb-base-data?'+urlencode({'symbol_code':code}))
+              try:o=json.loads(txt); b=o.get('data') if isinstance(o,dict) else None
+              except:b=None
+              if isinstance(b,dict):
+                  q=dict(b); q['_status']=s; base_rows.append(q)
+              else: base_fail.append({'cb_id':code,'status':s,'raw':txt[:300]})
+              if i%50==0: print('BASE_PROGRESS',i,'/',len(items),'success',len(base_rows),'fail',len(base_fail),flush=True)
+              time.sleep(0.11)
+          open(os.path.join(OUT,'base_all.json'),'w',encoding='utf-8').write(json.dumps(base_rows,ensure_ascii=False,indent=2))
+          open(os.path.join(OUT,'base_fail.json'),'w',encoding='utf-8').write(json.dumps(base_fail,ensure_ascii=False,indent=2))
+
           cand=[]
-          for b in rows:
+          for b in base_rows:
               ld=b.get('listed_date'); stop=b.get('stop_trading_date') or b.get('de_listed_date') or 99999999
               try: ld=int(ld) if ld else 99999999; stop=int(stop) if stop else 99999999
               except: continue
               if ld<=20171229 and stop>=20150625:
-                  cand.append(b)
-          open('cb_universe/candidates_2015_2017.json','w',encoding='utf-8').write(json.dumps(cand,ensure_ascii=False,indent=2))
-          print('BASE_ROWS',len(rows),'CANDIDATES_2015_2017',len(cand),flush=True)
-          for b in cand:
-              print('CAND',b.get('cb_id'),b.get('cb_name'),b.get('listed_date'),b.get('stop_trading_date'),b.get('de_listed_date'),b.get('exchange'),flush=True)
-          PY
-          python /tmp/universe.py
+                  code=str(b.get('cb_id')).zfill(6); exch=b.get('exchange')
+                  symbol=('sh' if exch==3553 else 'sz' if exch==3554 else '')+code
+                  if symbol[:2] in ('sh','sz'):
+                      q=dict(b); q['symbol']=symbol; cand.append(q)
+          open(os.path.join(OUT,'candidates.json'),'w',encoding='utf-8').write(json.dumps(cand,ensure_ascii=False,indent=2))
+          print('CANDIDATES',len(cand),flush=True)
+          for b in cand: print('CAND',b['symbol'],b.get('cb_name'),b.get('listed_date'),b.get('stop_trading_date'),b.get('de_listed_date'),flush=True)
 
-      - name: Upload universe metadata
+          start=pd.Timestamp('2015-06-25'); end=pd.Timestamp('2017-12-29')
+          status=[]; parts=[]
+          for i,b in enumerate(cand,1):
+              symbol=b['symbol']; code=str(b.get('cb_id')).zfill(6); name=b.get('cb_name') or b.get('full_name') or ''
+              try:
+                  df=ak.bond_zh_hs_cov_daily(symbol=symbol)
+                  if df is None: df=pd.DataFrame()
+                  if not df.empty and 'date' in df.columns:
+                      df=df.copy(); df['date']=pd.to_datetime(df['date'],errors='coerce')
+                      for c in ['open','high','low','close','volume']:
+                          if c in df.columns: df[c]=pd.to_numeric(df[c],errors='coerce')
+                      df=df[(df.date>=start)&(df.date<=end)].sort_values('date').drop_duplicates('date',keep='last')
+                  else: df=pd.DataFrame(columns=['date','open','high','low','close','volume'])
+                  save=df.copy(); save['date']=pd.to_datetime(save['date'],errors='coerce').dt.strftime('%Y-%m-%d')
+                  save.to_csv(os.path.join(RAW,f'{symbol}.csv'),index=False,encoding='utf-8-sig')
+                  if len(df):
+                      payload=df[[c for c in ['date','open','high','low','close','volume'] if c in df]].to_csv(index=False,date_format='%Y-%m-%d').encode()
+                      h=hashlib.sha256(payload).hexdigest()
+                      p=df[['date','close']+(['volume'] if 'volume' in df else [])].copy()
+                      if 'volume' not in p:p['volume']=np.nan
+                      p['bond_code']=code;p['bond_name']=name;p['symbol']=symbol;p['series_hash']=h;parts.append(p)
+                      first=df.date.min().strftime('%Y-%m-%d');last=df.date.max().strftime('%Y-%m-%d')
+                  else:h='';first='';last=''
+                  status.append({'bond_code':code,'bond_name':name,'symbol':symbol,'rows':len(df),'first_date':first,'last_date':last,'series_hash':h,'ok':True,'error':''})
+              except Exception as e:
+                  status.append({'bond_code':code,'bond_name':name,'symbol':symbol,'rows':0,'first_date':'','last_date':'','series_hash':'','ok':False,'error':repr(e)})
+              print('K_PROGRESS',i,'/',len(cand),symbol,'rows',status[-1]['rows'],'ok',status[-1]['ok'],flush=True)
+              time.sleep(0.20)
+          sdf=pd.DataFrame(status); sdf.to_csv(os.path.join(OUT,'fetch_status.csv'),index=False,encoding='utf-8-sig')
+          if parts:
+              long=pd.concat(parts,ignore_index=True); long['date']=pd.to_datetime(long.date); long['close']=pd.to_numeric(long.close,errors='coerce');long['volume']=pd.to_numeric(long.volume,errors='coerce')
+              long=long[long.close.notna()&(long.close>0)]
+              long.to_csv(os.path.join(OUT,'daily_long.csv'),index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
+              reps=set(sdf[(sdf.rows>0)&(sdf.series_hash!='')].drop_duplicates('series_hash').symbol); ded=long[long.symbol.isin(reps)].copy()
+              def stats(x):
+                  v=x.close.dropna();t=x.loc[x.volume.fillna(0)>0,'close'].dropna();return pd.Series({'median_close':v.median(),'sample_count':len(v),'traded_median_close':t.median() if len(t) else np.nan,'traded_sample_count':len(t)})
+              med=ded.groupby('date',sort=True).apply(stats,include_groups=False).reset_index();med.to_csv(os.path.join(OUT,'median_daily.csv'),index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
+              summ={'universe_items':len(items),'base_success':len(base_rows),'base_fail':len(base_fail),'candidates':len(cand),'kline_nonempty':int((sdf.rows>0).sum()),'kline_empty_or_fail':int((sdf.rows==0).sum()),'daily_rows':len(long),'median_days':len(med),'first_date':med.date.min().strftime('%Y-%m-%d') if len(med) else None,'last_date':med.date.max().strftime('%Y-%m-%d') if len(med) else None}
+          else:summ={'universe_items':len(items),'base_success':len(base_rows),'base_fail':len(base_fail),'candidates':len(cand),'kline_nonempty':0}
+          print('FINAL_SUMMARY='+json.dumps(summ,ensure_ascii=False),flush=True);open(os.path.join(OUT,'summary.json'),'w',encoding='utf-8').write(json.dumps(summ,ensure_ascii=False,indent=2))
+          PY
+          python /tmp/extend.py
+
+      - name: Upload 2015-2017 extension
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cb-ftshare-universe
-          path: cb_universe/
+          name: cb-2015-2017-extension
+          path: cb_2015_2017/
           if-no-files-found: warn
+          compression-level: 6

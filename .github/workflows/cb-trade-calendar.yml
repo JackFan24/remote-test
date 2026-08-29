@@ -1,0 +1,40 @@
+name: cb-trade-calendar
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cb-trade-calendar.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-calendar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install AKShare
+        run: python -m pip install -q --disable-pip-version-check akshare
+      - name: Fetch China A-share trade calendar
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import pandas as pd
+          import akshare as ak
+          os.makedirs('calendar_out',exist_ok=True)
+          df=ak.tool_trade_date_hist_sina()
+          col='trade_date' if 'trade_date' in df.columns else df.columns[0]
+          df[col]=pd.to_datetime(df[col],errors='coerce')
+          df=df[(df[col]>=pd.Timestamp('2002-01-01'))&(df[col]<=pd.Timestamp('2017-12-29'))].copy()
+          df[col]=df[col].dt.strftime('%Y-%m-%d')
+          df.to_csv('calendar_out/trade_calendar_2002_2017.csv',index=False,encoding='utf-8-sig')
+          print('ROWS',len(df),'FIRST',df.iloc[0][col],'LAST',df.iloc[-1][col])
+          print(df.groupby(df[col].str[:4]).size().to_string())
+          PY
+      - name: Upload calendar
+        uses: actions/upload-artifact@v4
+        with:
+          name: cb-trade-calendar
+          path: calendar_out/

@@ -1,0 +1,48 @@
+name: cb-universe-fastlist
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cb-universe-fastlist.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quick-historical-list:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install AKShare
+        run: python -m pip install -q --disable-pip-version-check akshare
+      - name: Test bulk historical CB list sources
+        shell: bash
+        run: |
+          cat > /tmp/list_cb.py <<'PY'
+          import os,json,traceback
+          import pandas as pd
+          import akshare as ak
+          os.makedirs('cb_fastlist',exist_ok=True)
+          out=[]
+          for fn in ['bond_zh_cov','bond_cov_issue_cninfo']:
+              try:
+                  df=getattr(ak,fn)()
+                  df.to_csv(f'cb_fastlist/{fn}.csv',index=False,encoding='utf-8-sig')
+                  out.append({'fn':fn,'ok':True,'rows':len(df),'columns':[str(x) for x in df.columns],'head':df.head(3).astype(str).to_dict('records'),'tail':df.tail(3).astype(str).to_dict('records')})
+                  print(fn,'ROWS',len(df),'COLS',[str(x) for x in df.columns],flush=True)
+                  print(df.head(5).to_string(),flush=True)
+                  print(df.tail(5).to_string(),flush=True)
+              except Exception as e:
+                  out.append({'fn':fn,'ok':False,'error':repr(e),'trace':traceback.format_exc()[-2000:]})
+                  print(fn,'ERROR',repr(e),flush=True)
+          open('cb_fastlist/summary.json','w',encoding='utf-8').write(json.dumps(out,ensure_ascii=False,indent=2))
+          PY
+          python /tmp/list_cb.py
+      - name: Upload list outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cb-universe-fastlist
+          path: cb_fastlist/
+          if-no-files-found: warn

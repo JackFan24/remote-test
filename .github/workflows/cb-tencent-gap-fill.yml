@@ -1,0 +1,77 @@
+name: cb-tencent-gap-fill
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cb-tencent-gap-fill.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fill-tencent-raw:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch raw Tencent daily K-lines for missing windows
+        shell: bash
+        run: |
+          python - <<'PY'
+          import csv,json,os,time
+          from concurrent.futures import ThreadPoolExecutor,as_completed
+          from urllib.request import Request,urlopen
+          from urllib.error import HTTPError
+          WINDOWS=[
+          ("2005-03-01","2005-05-13",["sh100016","sh100087","sh100096","sh100117","sh100177","sh100196","sh100220","sh100236","sh100567","sh100726","sh100795","sh110001","sh110010","sh110036","sh110037","sh110219","sh110317","sh110418","sh110874","sz125069","sz125488","sz125630","sz125729","sz125822","sz125930","sz125932","sz125936","sz125937","sz125959","sz126002","sz126301"]),
+          ("2005-10-25","2005-10-31",["sh100016","sh100087","sh100096","sh100117","sh100177","sh100196","sh100236","sh100567","sh100726","sh100795","sh110001","sh110010","sh110036","sh110037","sh110219","sh110317","sh110418","sh110874","sz125488","sz125729","sz125822","sz125932","sz125936","sz125959","sz126002","sz126301"]),
+          ("2006-09-04","2006-09-11",["sh100087","sh100117","sh100236","sh100726","sh100795","sh110001","sh110036","sh110317","sh110325","sh110398","sh110423","sh110874","sz125024","sz125488","sz125822","sz125932","sz125959","sz126002","sz126301"]),
+          ("2010-06-21","2010-06-25",["sh110003","sh110004","sh110007","sh110008","sh110009","sh110078","sh113001","sz125528","sz125572","sz125709","sz125731","sz125960","sz126002","sz128031"]),
+          ("2012-07-27","2012-07-31",["sh110003","sh110007","sh110011","sh110012","sh110013","sh110015","sh110016","sh110017","sh110018","sh110019","sh113001","sh113002","sh113003","sz125089","sz125528","sz125572","sz125709","sz125731","sz125887","sz125960","sz126002","sz126729","sz128031","sz129031"])]
+          os.makedirs('tencent_gap',exist_ok=True)
+          jobs=[(s,e,x) for s,e,syms in WINDOWS for x in syms]
+          def num(x):
+              try:return float(x)
+              except:return None
+          def fetch(job):
+              start,end,sym=job
+              url=f'https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param={sym},day,{start},{end},200'
+              last=''
+              for a in range(3):
+                  try:
+                      req=Request(url,headers={'User-Agent':'Mozilla/5.0','Accept':'application/json'})
+                      with urlopen(req,timeout=20) as r: txt=r.read().decode('utf-8','replace'); http=r.status
+                  except HTTPError as e: http=e.code;txt=e.read().decode('utf-8','replace')
+                  except Exception as e: http=-1;txt=repr(e)
+                  last=txt
+                  if http==200:
+                      try:o=json.loads(txt);b=(o.get('data') or {}).get(sym) or {}; arr=b.get('day') or []
+                      except:arr=[]
+                      rows=[]
+                      for h in arr:
+                          if not isinstance(h,list) or len(h)<6: continue
+                          # Tencent raw day: date, open, close, high, low, volume; later fields optional
+                          rows.append({'date':h[0],'symbol':sym,'bond_code':sym[2:],'open':num(h[1]),'close':num(h[2]),'high':num(h[3]),'low':num(h[4]),'volume':num(h[5]),'window_start':start,'window_end':end})
+                      return {'symbol':sym,'start':start,'end':end,'http':http,'rows':rows,'head':txt[:240].replace('\n',' ')}
+                  time.sleep(.5*(a+1))
+              return {'symbol':sym,'start':start,'end':end,'http':http,'rows':[],'head':last[:240].replace('\n',' ')}
+          results=[]
+          with ThreadPoolExecutor(max_workers=6) as ex:
+              fs=[ex.submit(fetch,j) for j in jobs]
+              for i,f in enumerate(as_completed(fs),1):
+                  r=f.result();results.append(r);print(f'[{i}/{len(jobs)}] {r["symbol"]} rows={len(r["rows"])} http={r["http"]}',flush=True)
+          rows=[];status=[]
+          for r in results:
+              rows.extend(r['rows']);status.append({'symbol':r['symbol'],'start':r['start'],'end':r['end'],'http':r['http'],'rows':len(r['rows']),'head':r['head']})
+          rows.sort(key=lambda x:(x['date'],x['symbol']));status.sort(key=lambda x:(x['start'],x['symbol']))
+          with open('tencent_gap/tencent_rows.csv','w',newline='',encoding='utf-8-sig') as f:
+              fields=['date','symbol','bond_code','open','high','low','close','volume','window_start','window_end'];w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(rows)
+          with open('tencent_gap/fetch_status.csv','w',newline='',encoding='utf-8-sig') as f:
+              fields=['symbol','start','end','http','rows','head'];w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(status)
+          print('TOTAL_ROWS',len(rows),'REQUESTS',len(status),'HTTP200',sum(x['http']==200 for x in status),flush=True)
+          PY
+      - name: Upload Tencent raw K-lines
+        uses: actions/upload-artifact@v4
+        with:
+          name: cb-tencent-gap-fill
+          path: tencent_gap/

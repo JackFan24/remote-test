@@ -1,0 +1,96 @@
+name: cb-pre2018-eastmoney-universe
+
+on:
+  push:
+    paths:
+      - '.github/workflows/cb-pre2018-eastmoney-universe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-pre2018-universe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Install AKShare
+        run: python -m pip install -q --disable-pip-version-check akshare
+      - name: Build Eastmoney historical universe and fetch Sina daily K-lines
+        shell: bash
+        run: |
+          cat > /tmp/fetch_pre2018.py <<'PY'
+          import os,json,time,hashlib,traceback
+          import pandas as pd
+          import numpy as np
+          import akshare as ak
+
+          OUT='cb_pre2018_em'; RAW=os.path.join(OUT,'raw_sina'); os.makedirs(RAW,exist_ok=True)
+          u=ak.bond_zh_cov().copy()
+          u['上市时间']=pd.to_datetime(u['上市时间'],errors='coerce')
+          u=u[u['上市时间'].notna() & (u['上市时间']<=pd.Timestamp('2017-12-29'))].copy()
+          u['债券代码']=u['债券代码'].astype(str).str.zfill(6)
+          u['正股代码']=u['正股代码'].astype(str).str.zfill(6)
+          u=u.sort_values(['上市时间','债券代码']).drop_duplicates('债券代码',keep='last')
+          u.to_csv(os.path.join(OUT,'universe_pre2018.csv'),index=False,encoding='utf-8-sig')
+          print('UNIVERSE_N',len(u),'FIRST',u['上市时间'].min(),'LAST',u['上市时间'].max(),flush=True)
+
+          parts=[]; status=[]
+          for i,r in enumerate(u.to_dict('records'),1):
+              code=str(r['债券代码']).zfill(6); name=str(r.get('债券简称') or ''); stock=str(r.get('正股代码') or '').zfill(6)
+              primary='sh' if stock.startswith(('6','9')) else 'sz'
+              tries=[primary+code,('sz' if primary=='sh' else 'sh')+code]
+              best=None; err=[]
+              for sym in tries:
+                  try:
+                      df=ak.bond_zh_hs_cov_daily(symbol=sym)
+                      if df is not None and len(df) and 'date' in df.columns:
+                          d=df.copy();d['date']=pd.to_datetime(d['date'],errors='coerce')
+                          for c in ['open','high','low','close','volume']:
+                              if c in d.columns:d[c]=pd.to_numeric(d[c],errors='coerce')
+                          d=d[d.date<=pd.Timestamp('2017-12-29')].sort_values('date').drop_duplicates('date',keep='last')
+                          if len(d): best=(sym,d);break
+                  except Exception as e: err.append(f'{sym}:{repr(e)}')
+              if best:
+                  sym,d=best
+                  save=d.copy();save['date']=save.date.dt.strftime('%Y-%m-%d');save.to_csv(os.path.join(RAW,f'{sym}.csv'),index=False,encoding='utf-8-sig')
+                  payload=d[[c for c in ['date','open','high','low','close','volume'] if c in d]].to_csv(index=False,date_format='%Y-%m-%d').encode();h=hashlib.sha256(payload).hexdigest()
+                  p=d[['date','close']+(['volume'] if 'volume' in d else [])].copy()
+                  if 'volume' not in p:p['volume']=np.nan
+                  p['bond_code']=code;p['bond_name']=name;p['symbol']=sym;p['series_hash']=h;p['em_list_date']=pd.Timestamp(r['上市时间'])
+                  parts.append(p)
+                  status.append({'bond_code':code,'bond_name':name,'symbol':sym,'rows':len(d),'first_date':d.date.min().strftime('%Y-%m-%d'),'last_date':d.date.max().strftime('%Y-%m-%d'),'series_hash':h,'ok':True,'errors':'|'.join(err)})
+              else:
+                  status.append({'bond_code':code,'bond_name':name,'symbol':'','rows':0,'first_date':'','last_date':'','series_hash':'','ok':False,'errors':'|'.join(err)})
+              print(f'[{i:03d}/{len(u)}] {code} {name}: {status[-1]["symbol"]} rows={status[-1]["rows"]} ok={status[-1]["ok"]}',flush=True)
+              time.sleep(0.15)
+
+          sdf=pd.DataFrame(status);sdf.to_csv(os.path.join(OUT,'fetch_status.csv'),index=False,encoding='utf-8-sig')
+          long=pd.concat(parts,ignore_index=True) if parts else pd.DataFrame()
+          if len(long):
+              long['date']=pd.to_datetime(long.date);long['close']=pd.to_numeric(long.close,errors='coerce');long['volume']=pd.to_numeric(long.volume,errors='coerce');long=long[long.close.notna()&(long.close>0)]
+              long.to_csv(os.path.join(OUT,'daily_long.csv'),index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
+              # Detect exact duplicate sequences and use one representative only.
+              dup=[]
+              for h,g in sdf[(sdf.rows>0)&(sdf.series_hash!='')].groupby('series_hash'):
+                  if len(g)>1:dup.append({'series_hash':h,'symbols':'|'.join(g.symbol),'codes':'|'.join(g.bond_code),'names':'|'.join(g.bond_name),'n':len(g)})
+              pd.DataFrame(dup).to_csv(os.path.join(OUT,'exact_duplicates.csv'),index=False,encoding='utf-8-sig')
+              reps=set(sdf[(sdf.rows>0)&(sdf.series_hash!='')].drop_duplicates('series_hash').symbol)
+              ded=long[long.symbol.isin(reps)].copy();ded.to_csv(os.path.join(OUT,'daily_long_dedup.csv'),index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
+              def stats(x):
+                  v=x.close.dropna();t=x.loc[x.volume.fillna(0)>0,'close'].dropna();return pd.Series({'median_close':v.median(),'sample_count':len(v),'traded_median_close':t.median() if len(t) else np.nan,'traded_sample_count':len(t)})
+              med=ded.groupby('date',sort=True).apply(stats,include_groups=False).reset_index();med.to_csv(os.path.join(OUT,'median_daily.csv'),index=False,encoding='utf-8-sig',date_format='%Y-%m-%d')
+              summary={'universe_n':len(u),'success':int((sdf.rows>0).sum()),'failed':int((sdf.rows==0).sum()),'daily_rows':len(long),'median_days':len(med),'duplicate_groups':len(dup),'first_date':med.date.min().strftime('%Y-%m-%d'),'last_date':med.date.max().strftime('%Y-%m-%d')}
+          else:summary={'universe_n':len(u),'success':0,'failed':len(u)}
+          print('FINAL_SUMMARY='+json.dumps(summary,ensure_ascii=False),flush=True)
+          open(os.path.join(OUT,'summary.json'),'w',encoding='utf-8').write(json.dumps(summary,ensure_ascii=False,indent=2))
+          PY
+          python /tmp/fetch_pre2018.py
+      - name: Upload reconstruction
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cb-pre2018-eastmoney-universe
+          path: cb_pre2018_em/
+          if-no-files-found: warn
+          compression-level: 6

@@ -1,0 +1,41 @@
+name: cb-generic-bond-diag
+on:
+  push:
+    paths: ['.github/workflows/cb-generic-bond-diag.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: python -m pip install -q --disable-pip-version-check akshare
+      - name: Test generic Sina bond history
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os,json
+          import pandas as pd
+          import akshare as ak
+          os.makedirs('generic_bond_diag',exist_ok=True)
+          for sym in ['sz126002','sz125898','sh100016','sz125069']:
+              rec={'symbol':sym}
+              for fn in ['bond_zh_hs_daily','bond_zh_hs_cov_daily']:
+                  try:
+                      df=getattr(ak,fn)(symbol=sym)
+                      if df is None: df=pd.DataFrame()
+                      df.to_csv(f'generic_bond_diag/{sym}_{fn}.csv',index=False,encoding='utf-8-sig')
+                      if len(df) and 'date' in df:
+                          d=pd.to_datetime(df.date,errors='coerce')
+                          sub=df[(d>=pd.Timestamp('2005-03-01'))&(d<=pd.Timestamp('2005-04-15'))]
+                          rec[fn]={'rows':len(df),'first':str(d.min().date()),'last':str(d.max().date()),'mar_apr_rows':len(sub),'has_20050310':bool((d==pd.Timestamp('2005-03-10')).any()),'has_20050324':bool((d==pd.Timestamp('2005-03-24')).any()),'has_20060414':bool((d==pd.Timestamp('2006-04-14')).any()),'has_2010':bool((d.dt.year==2010).any())}
+                      else: rec[fn]={'rows':len(df)}
+                  except Exception as e: rec[fn]={'error':repr(e)}
+              print(json.dumps(rec,ensure_ascii=False),flush=True)
+          open('generic_bond_diag/summary.txt','w',encoding='utf-8').write('done')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cb-generic-bond-diag
+          path: generic_bond_diag/

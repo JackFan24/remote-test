@@ -10,84 +10,67 @@ permissions:
   contents: read
 
 jobs:
-  verify-old-cb-k:
+  diagnose-old-cb-k:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Query FTShare for three legacy convertible bonds
+      - name: Diagnose FTShare legacy convertible bonds
         shell: bash
         run: |
-          cat > /tmp/fetch_cb.py <<'PY'
-          import csv, json, os, sys
+          cat > /tmp/diag.py <<'PY'
+          import json, os
           from datetime import datetime, timezone, timedelta
           from urllib.request import Request, urlopen
+          from urllib.parse import urlencode
           from urllib.error import HTTPError
 
-          URL = 'https://market.ft.tech/gateway/api/v1/market/data/convertible-bond-candlesticks'
-          SH = timezone(timedelta(hours=8))
-          since = int(datetime(2012, 3, 27, 0, 0, tzinfo=SH).timestamp() * 1000)
-          until = int(datetime(2012, 4, 3, 23, 59, 59, tzinfo=SH).timestamp() * 1000)
-          anchors = {'110003.SH': 102.16, '125731.SZ': 109.197, '113001.SH': 94.72}
-          os.makedirs('cb_verify', exist_ok=True)
+          BASE='https://market.ft.tech/gateway/'
+          KURL=BASE+'api/v1/market/data/convertible-bond-candlesticks'
+          SH=timezone(timedelta(hours=8))
+          os.makedirs('cb_diag', exist_ok=True)
 
-          def collect_rows(obj):
-              out=[]
-              def walk(x):
-                  if isinstance(x, dict):
-                      if 'close' in x and ('ts_millis' in x or 'date' in x or 'time' in x): out.append(x)
-                      for v in x.values(): walk(v)
-                  elif isinstance(x, list):
-                      for v in x: walk(v)
-              walk(obj)
-              seen=set(); uniq=[]
-              for r in out:
-                  key=json.dumps(r, ensure_ascii=False, sort_keys=True, default=str)
-                  if key not in seen: seen.add(key); uniq.append(r)
-              return uniq
-
-          summary=[]; all_rows=[]
-          for symbol, expected in anchors.items():
-              body={'symbol':symbol,'interval_unit':'day','adjust_kind':'none','since_ts_millis':since,'until_ts_millis':until,'limit':20}
-              req=Request(URL,data=json.dumps(body).encode('utf-8'),headers={'Content-Type':'application/json','Accept':'application/json'},method='POST')
-              raw_path=f"cb_verify/{symbol.replace('.', '_')}_raw.json"
+          def ms(y,m,d): return int(datetime(y,m,d,23,59,59,tzinfo=SH).timestamp()*1000)
+          def request(method,url,body=None):
+              data=None if body is None else json.dumps(body).encode()
+              req=Request(url,data=data,headers={'Content-Type':'application/json','Accept':'application/json'},method=method)
               try:
-                  with urlopen(req, timeout=45) as resp:
-                      raw=resp.read().decode('utf-8',errors='replace'); status=resp.status
-              except HTTPError as e:
-                  raw=e.read().decode('utf-8',errors='replace'); status=e.code
-              except Exception as e:
-                  raw=json.dumps({'exception':type(e).__name__,'message':str(e)},ensure_ascii=False); status=-1
-              open(raw_path,'w',encoding='utf-8').write(raw)
-              try: obj=json.loads(raw)
-              except Exception: obj={'raw_text':raw}
-              rows=collect_rows(obj); match=None
-              for r in rows:
-                  ts=r.get('ts_millis'); dt=None
-                  if ts is not None:
-                      try: dt=datetime.fromtimestamp(int(ts)/1000,tz=SH).date().isoformat()
-                      except Exception: pass
-                  if dt is None:
-                      for k in ('date','time'):
-                          if r.get(k): dt=str(r[k])[:10]; break
-                  close=r.get('close')
-                  all_rows.append({'symbol':symbol,'date':dt or '','close':close,'ts_millis':ts or '','http_status':status})
-                  if dt=='2012-03-30':
-                      try:
-                          actual=float(close); match={'actual':actual,'expected':expected,'diff':actual-expected,'pass':abs(actual-expected)<=0.005}
-                      except Exception: match={'actual':close,'expected':expected,'diff':None,'pass':False}
-              summary.append({'symbol':symbol,'http_status':status,'rows_found':len(rows),'anchor':match,'raw_file':raw_path})
-          with open('cb_verify/rows.csv','w',newline='',encoding='utf-8-sig') as f:
-              w=csv.DictWriter(f,fieldnames=['symbol','date','close','ts_millis','http_status']); w.writeheader(); w.writerows(all_rows)
-          open('cb_verify/summary.json','w',encoding='utf-8').write(json.dumps(summary,ensure_ascii=False,indent=2))
-          print(json.dumps(summary,ensure_ascii=False,indent=2))
-          if not all(s.get('http_status')==200 and s.get('anchor') and s['anchor'].get('pass') for s in summary): sys.exit(2)
-          PY
-          python /tmp/fetch_cb.py
+                  with urlopen(req,timeout=45) as r: return r.status,r.read().decode('utf-8','replace')
+              except HTTPError as e: return e.code,e.read().decode('utf-8','replace')
+              except Exception as e: return -1,json.dumps({'exception':type(e).__name__,'message':str(e)},ensure_ascii=False)
 
-      - name: Upload verification output
+          tests=[
+            ('110003_last50',{'symbol':'110003.SH','interval_unit':'day','adjust_kind':'none','until_ts_millis':ms(2013,8,6),'limit':50}),
+            ('113001_last50',{'symbol':'113001.SH','interval_unit':'day','adjust_kind':'none','until_ts_millis':ms(2015,3,6),'limit':50}),
+            ('113027_active',{'symbol':'113027.SH','interval_unit':'day','adjust_kind':'none','until_ts_millis':ms(2024,6,6),'limit':2}),
+            ('125731_last50',{'symbol':'125731.SZ','interval_unit':'day','adjust_kind':'none','until_ts_millis':ms(2013,4,12),'limit':50}),
+            ('112731_try',{'symbol':'112731.SZ','interval_unit':'day','adjust_kind':'none','until_ts_millis':ms(2013,4,12),'limit':50}),
+          ]
+          summary=[]
+          for name,body in tests:
+              st,raw=request('POST',KURL,body)
+              open(f'cb_diag/{name}.json','w',encoding='utf-8').write(raw)
+              try: obj=json.loads(raw)
+              except: obj={}
+              data=obj.get('data') if isinstance(obj,dict) else None
+              summary.append({'name':name,'http_status':st,'code':obj.get('code') if isinstance(obj,dict) else None,'message':obj.get('message') if isinstance(obj,dict) else None,'data_len':len(data) if isinstance(data,list) else None})
+
+          for code in ['110003','113001','125731','112731']:
+              url=BASE+'api/v1/market/data/cb/cb-base-data?'+urlencode({'symbol_code':code})
+              st,raw=request('GET',url)
+              open(f'cb_diag/base_{code}.json','w',encoding='utf-8').write(raw)
+              try: obj=json.loads(raw)
+              except: obj={}
+              summary.append({'name':'base_'+code,'http_status':st,'code':obj.get('code') if isinstance(obj,dict) else None,'message':obj.get('message') if isinstance(obj,dict) else None,'data_preview':str(obj.get('data'))[:500] if isinstance(obj,dict) else ''})
+
+          print(json.dumps(summary,ensure_ascii=False,indent=2))
+          open('cb_diag/summary.json','w',encoding='utf-8').write(json.dumps(summary,ensure_ascii=False,indent=2))
+          PY
+          python /tmp/diag.py
+
+      - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cb-old-k-verify
-          path: cb_verify/
+          name: cb-old-k-diagnose
+          path: cb_diag/
           if-no-files-found: warn

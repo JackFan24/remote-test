@@ -1,0 +1,57 @@
+name: cb-value-analysis-bulk
+on:
+  push:
+    paths: ['.github/workflows/cb-value-analysis-bulk.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Fetch historical conversion value and premium for 142 legacy CBs
+        shell: bash
+        run: |
+          python -m pip install -q --disable-pip-version-check akshare pandas
+          python - <<'PY'
+          import os,time,traceback
+          import pandas as pd
+          import akshare as ak
+          os.makedirs('out',exist_ok=True)
+          codes='''100009,100016,100087,100096,100117,100177,100196,100220,100236,100567,100726,100795,110001,110002,110003,110004,110005,110006,110007,110008,110009,110010,110011,110012,110013,110015,110016,110017,110018,110019,110020,110021,110022,110023,110024,110025,110026,110027,110028,110029,110030,110031,110032,110033,110034,110035,110036,110037,110038,110039,110040,110078,110219,110227,110232,110317,110325,110368,110398,110418,110423,110488,110567,110598,110874,110971,113001,113002,113003,113005,113006,113007,113008,113009,113010,113011,113012,113013,113014,113015,113016,113501,113502,123001,123002,125002,125024,125069,125089,125302,125488,125528,125572,125629,125630,125709,125729,125731,125822,125887,125930,125932,125936,125937,125959,125960,125969,126002,126301,126630,126729,127001,127002,127003,127004,128001,128002,128003,128004,128005,128006,128007,128008,128009,128010,128011,128012,128013,128014,128015,128016,128017,128018,128019,128020,128021,128022,128023,128025,128031,128233,129031'''.split(',')
+          outs=[]; status=[]
+          for i,code in enumerate(codes,1):
+              ok=False; err=''
+              for attempt in range(3):
+                  try:
+                      df=ak.bond_zh_cov_value_analysis(symbol=code)
+                      if df is None: df=pd.DataFrame()
+                      if len(df):
+                          df['日期']=pd.to_datetime(df['日期'],errors='coerce')
+                          df=df[df['日期'].notna() & (df['日期']<=pd.Timestamp('2017-12-29'))].copy()
+                          df['date']=df['日期'].dt.strftime('%Y-%m-%d')
+                          df['bond_code']=code
+                          for c in ['转股价值','转股溢价率']:
+                              if c not in df: df[c]=pd.NA
+                          z=df[['date','bond_code','转股价值','转股溢价率']].rename(columns={'转股价值':'conversion_value','转股溢价率':'conversion_premium'})
+                          outs.append(z)
+                          status.append({'code':code,'rows':len(z),'first':z['date'].min() if len(z) else '', 'last':z['date'].max() if len(z) else '', 'ok':True})
+                      else:
+                          status.append({'code':code,'rows':0,'ok':True})
+                      ok=True; break
+                  except Exception as e:
+                      err=repr(e); time.sleep(1.5*(attempt+1))
+              if not ok: status.append({'code':code,'rows':0,'ok':False,'error':err})
+              print(i,'/',len(codes),code,'OK' if ok else 'FAIL',status[-1],flush=True)
+              time.sleep(0.15)
+          out=pd.concat(outs,ignore_index=True) if outs else pd.DataFrame(columns=['date','bond_code','conversion_value','conversion_premium'])
+          out=out.drop_duplicates(['date','bond_code'],keep='last').sort_values(['date','bond_code'])
+          out.to_csv('out/value_analysis_2002_2017.csv.gz',index=False,encoding='utf-8-sig',compression='gzip')
+          pd.DataFrame(status).to_csv('out/status.csv',index=False,encoding='utf-8-sig')
+          print('TOTAL',len(out),'CODES',out['bond_code'].nunique() if len(out) else 0,'DATES',out['date'].min() if len(out) else '',out['date'].max() if len(out) else '',flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cb-value-analysis-bulk
+          path: out/

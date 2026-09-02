@@ -10,12 +10,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Fetch historical conversion value and premium for 142 legacy CBs
+      - name: Fetch historical price, conversion value and premium for 142 legacy CBs
         shell: bash
         run: |
           python -m pip install -q --disable-pip-version-check akshare pandas
           python - <<'PY'
-          import os,time,traceback
+          import os,time
           import pandas as pd
           import akshare as ak
           os.makedirs('out',exist_ok=True)
@@ -29,23 +29,19 @@ jobs:
                       if df is None: df=pd.DataFrame()
                       if len(df):
                           df['日期']=pd.to_datetime(df['日期'],errors='coerce')
-                          df=df[df['日期'].notna() & (df['日期']<=pd.Timestamp('2017-12-29'))].copy()
-                          df['date']=df['日期'].dt.strftime('%Y-%m-%d')
-                          df['bond_code']=code
-                          for c in ['转股价值','转股溢价率']:
+                          df=df[df['日期'].notna() & (df['日期']>=pd.Timestamp('2002-01-01')) & (df['日期']<=pd.Timestamp('2017-12-29'))].copy()
+                          df['date']=df['日期'].dt.strftime('%Y-%m-%d'); df['bond_code']=code
+                          for c in ['收盘价','转股价值','转股溢价率']:
                               if c not in df: df[c]=pd.NA
-                          z=df[['date','bond_code','转股价值','转股溢价率']].rename(columns={'转股价值':'conversion_value','转股溢价率':'conversion_premium'})
-                          outs.append(z)
-                          status.append({'code':code,'rows':len(z),'first':z['date'].min() if len(z) else '', 'last':z['date'].max() if len(z) else '', 'ok':True})
-                      else:
-                          status.append({'code':code,'rows':0,'ok':True})
+                          z=df[['date','bond_code','收盘价','转股价值','转股溢价率']].rename(columns={'收盘价':'value_close','转股价值':'conversion_value','转股溢价率':'conversion_premium'})
+                          outs.append(z); status.append({'code':code,'rows':len(z),'first':z['date'].min() if len(z) else '', 'last':z['date'].max() if len(z) else '', 'ok':True})
+                      else: status.append({'code':code,'rows':0,'ok':True})
                       ok=True; break
                   except Exception as e:
                       err=repr(e); time.sleep(1.5*(attempt+1))
               if not ok: status.append({'code':code,'rows':0,'ok':False,'error':err})
-              print(i,'/',len(codes),code,'OK' if ok else 'FAIL',status[-1],flush=True)
-              time.sleep(0.15)
-          out=pd.concat(outs,ignore_index=True) if outs else pd.DataFrame(columns=['date','bond_code','conversion_value','conversion_premium'])
+              print(i,'/',len(codes),code,'OK' if ok else 'FAIL',status[-1],flush=True); time.sleep(.12)
+          out=pd.concat(outs,ignore_index=True) if outs else pd.DataFrame(columns=['date','bond_code','value_close','conversion_value','conversion_premium'])
           out=out.drop_duplicates(['date','bond_code'],keep='last').sort_values(['date','bond_code'])
           out.to_csv('out/value_analysis_2002_2017.csv.gz',index=False,encoding='utf-8-sig',compression='gzip')
           pd.DataFrame(status).to_csv('out/status.csv',index=False,encoding='utf-8-sig')

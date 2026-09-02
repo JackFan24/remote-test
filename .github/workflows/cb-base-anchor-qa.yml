@@ -1,0 +1,55 @@
+name: cb-base-anchor-qa
+on:
+  push:
+    paths: ['.github/workflows/cb-base-anchor-qa.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - shell: bash
+        run: |
+          python -m pip install -q --disable-pip-version-check akshare pandas requests
+          python - <<'PY'
+          import os,time
+          import pandas as pd, requests
+          import akshare as ak
+          os.makedirs('out',exist_ok=True)
+          codes='''110030,110031,110032,110033,110034,110038,110039,110040,113008,113009,113010,113011,113012,113013,113014,113015,113016,113502,123001,123002,127003,127004,128010,128012,128013,128014,128015,128016,128017,128018,128019,128020,128021,128022,128023,128025'''.split(',')
+          rec=[]
+          for code in codes:
+              row={'bond_code':code}
+              try:
+                  d=ak.bond_zh_cov_value_analysis(symbol=code)
+                  d['日期']=pd.to_datetime(d['日期'],errors='coerce').dt.strftime('%Y-%m-%d')
+                  z=d[d['日期']=='2017-12-29']
+                  if len(z):
+                      a=z.iloc[-1]
+                      row.update(value_close=a.get('收盘价'),conversion_value=a.get('转股价值'),conversion_premium=a.get('转股溢价率'))
+              except Exception as e: row['value_error']=repr(e)
+              # Eastmoney raw kline f57 amount
+              try:
+                  market='1' if code.startswith(('100','110','113')) else '0'
+                  url='https://push2his.eastmoney.com/api/qt/stock/kline/get'
+                  params={'secid':f'{market}.{code}','klt':101,'fqt':0,'beg':'20171229','end':'20171229','lmt':5,'fields1':'f1,f2,f3,f4,f5,f6','fields2':'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61'}
+                  data=requests.get(url,params=params,headers={'User-Agent':'Mozilla/5.0','Referer':'https://quote.eastmoney.com/'},timeout=10).json().get('data') or {}
+                  ks=data.get('klines') or []
+                  if ks:
+                      parts=ks[-1].split(',')
+                      row.update(em_date=parts[0],em_open=float(parts[1]),em_close=float(parts[2]),em_high=float(parts[3]),em_low=float(parts[4]),em_volume=float(parts[5]),em_amount=float(parts[6]))
+              except Exception as e: row['em_error']=repr(e)
+              rec.append(row); print(row,flush=True); time.sleep(.15)
+          df=pd.DataFrame(rec)
+          df.to_csv('out/base_20171229_qa.csv',index=False,encoding='utf-8-sig')
+          for c in ['value_close','em_close','em_amount']:
+              if c in df: df[c]=pd.to_numeric(df[c],errors='coerce')
+          print('VALUE_COUNT',df['value_close'].notna().sum(),'VALUE_AVG',df['value_close'].mean(),'VALUE_MED',df['value_close'].median(),flush=True)
+          print('EM_COUNT',df['em_close'].notna().sum(),'EM_AVG',df['em_close'].mean(),'EM_MED',df['em_close'].median(),'EM_AMOUNT_1E8',df['em_amount'].sum()/1e8,flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cb-base-anchor-qa
+          path: out/

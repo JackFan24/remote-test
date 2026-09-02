@@ -1,0 +1,49 @@
+name: cb-history-derived-test
+on:
+  push:
+    paths: ['.github/workflows/cb-history-derived-test.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Test JSL remaining-size history and historical YTM reconstruction
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/housansan/cb_tracker.git tracker
+          python -m pip install -q --disable-pip-version-check -r tracker/cb_tracker_src/requirements.txt
+          cd tracker/cb_tracker_src
+          python - <<'PY'
+          import os,sys,traceback
+          import pandas as pd
+          from bond.fetch import fetch_iss_amt_history
+          from bond.history import get_convertible_bond_history
+          os.makedirs('../../out',exist_ok=True)
+          tests=[('100016','20030227','20080227'),('126002','20040924','20060406'),('110007','20090923','20140905'),('113001','20100602','20150313'),('128023','20171204','20171229')]
+          rec=[]
+          for code,start,end in tests:
+              print('\n===',code,'===',flush=True)
+              try:
+                  iss=fetch_iss_amt_history(code)
+                  print('ISS',iss.shape,flush=True); print(iss.head(10).to_string(index=False),flush=True); print(iss.tail(10).to_string(index=False),flush=True)
+                  iss.to_csv(f'../../out/{code}_iss.csv',index=False,encoding='utf-8-sig')
+              except Exception as e:
+                  print('ISS_ERR',repr(e),flush=True); traceback.print_exc()
+              try:
+                  h=get_convertible_bond_history(code,start,end)
+                  print('HIST',h.shape,'COLS',list(h.columns),flush=True)
+                  cols=[c for c in ['日期','收盘价','成交量','转股价值','转股溢价率','剩余规模','到期收益率'] if c in h.columns]
+                  print(h[cols].head(5).to_string(index=False),flush=True); print(h[cols].tail(5).to_string(index=False),flush=True)
+                  h.to_csv(f'../../out/{code}_hist.csv',index=False,encoding='utf-8-sig')
+                  rec.append({'code':code,'rows':len(h),'cols':'|'.join(h.columns),'remain_nonnull':int(h['剩余规模'].notna().sum()) if '剩余规模' in h else 0,'ytm_nonnull':int(h['到期收益率'].notna().sum()) if '到期收益率' in h else 0})
+              except Exception as e:
+                  print('HIST_ERR',repr(e),flush=True); traceback.print_exc(); rec.append({'code':code,'error':repr(e)})
+          pd.DataFrame(rec).to_csv('../../out/summary.csv',index=False,encoding='utf-8-sig')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cb-history-derived-test
+          path: out/

@@ -1,0 +1,41 @@
+name: cb-value-analysis-test
+on:
+  push:
+    paths: ['.github/workflows/cb-value-analysis-test.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Test AKShare historical convertible value analysis
+        shell: bash
+        run: |
+          python -m pip install -q --disable-pip-version-check akshare pandas
+          python - <<'PY'
+          import os, traceback
+          import pandas as pd
+          import akshare as ak
+          os.makedirs('out',exist_ok=True)
+          codes=['110007','113001','125731','110030','128023','100016','126002','129031']
+          rec=[]
+          for code in codes:
+              try:
+                  df=ak.bond_zh_cov_value_analysis(symbol=code)
+                  print('\nCODE',code,'SHAPE',df.shape,'COLS',list(df.columns),flush=True)
+                  print(df.head(2).to_string(index=False),flush=True)
+                  print(df.tail(2).to_string(index=False),flush=True)
+                  df.to_csv(f'out/{code}.csv',index=False,encoding='utf-8-sig')
+                  rec.append({'code':code,'rows':len(df),'first':str(df.iloc[0,0]) if len(df) else '', 'last':str(df.iloc[-1,0]) if len(df) else '', 'cols':'|'.join(map(str,df.columns))})
+              except Exception as e:
+                  print('ERROR',code,repr(e),flush=True)
+                  traceback.print_exc()
+                  rec.append({'code':code,'error':repr(e)})
+          pd.DataFrame(rec).to_csv('out/summary.csv',index=False,encoding='utf-8-sig')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cb-value-analysis-test
+          path: out/

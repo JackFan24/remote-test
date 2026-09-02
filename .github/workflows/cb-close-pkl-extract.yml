@@ -8,43 +8,61 @@ permissions:
 jobs:
   extract:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
-      - name: Clone public CB dataset and extract Close matrix
+      - name: Clone public CB dataset and extract JSL-style history factors
         shell: bash
         run: |
-          python -m pip install -q --disable-pip-version-check pandas
+          python -m pip install -q --disable-pip-version-check pandas pyarrow
           git clone --depth 1 https://github.com/reskfa/cb_with_any_api.git repo
           python - <<'PY'
-          import os,json
+          import os,re
           import pandas as pd
-          os.makedirs('close_extract',exist_ok=True)
-          p='repo/data/Close.pkl'
-          print('FILE_EXISTS',os.path.exists(p),'SIZE',os.path.getsize(p) if os.path.exists(p) else None,flush=True)
-          x=pd.read_pickle(p)
-          print('TYPE',type(x).__name__,'SHAPE',getattr(x,'shape',None),flush=True)
-          print('INDEX_HEAD',list(x.index[:5]),'INDEX_TAIL',list(x.index[-5:]),flush=True)
-          print('COL_HEAD',[str(c) for c in x.columns[:30]],flush=True)
-          # normalize date index
-          idx=pd.to_datetime(x.index,errors='coerce'); x=x.copy();x.index=idx
-          targets=pd.to_datetime(['2005-03-04','2005-03-07','2005-03-08','2005-03-09','2005-03-10','2005-03-11','2005-03-17','2005-03-18','2005-03-21','2005-03-22','2005-03-23','2005-03-24','2005-03-25','2005-03-28','2005-03-29','2005-03-30','2005-03-31','2005-04-01','2005-04-04','2005-04-05','2005-04-11','2005-04-12','2005-05-11','2005-10-28','2006-09-07','2010-06-23','2012-07-30','2005-06-10','2012-06-27','2013-03-28'])
-          sub=x.reindex(targets)
-          sub.to_csv('close_extract/target_dates_matrix.csv',encoding='utf-8-sig')
-          # find 126002-like columns and some validation codes
-          cols=[c for c in x.columns if any(k in str(c) for k in ['126002','110003','125731','113001','100016','125069'])]
-          print('MATCH_COLS',[str(c) for c in cols],flush=True)
-          if cols:
-              x.loc[(x.index>=pd.Timestamp('2005-03-01'))&(x.index<=pd.Timestamp('2006-04-30')),cols].to_csv('close_extract/matched_columns_2005_2006.csv',encoding='utf-8-sig')
-          # row medians/counts raw matrix for target dates for diagnostic only
-          q=[]
-          for d in targets:
-              if d in x.index:
-                  row=pd.to_numeric(x.loc[d],errors='coerce').dropna()
-                  q.append({'date':d.strftime('%Y-%m-%d'),'n_nonnull':int(len(row)),'median_all_matrix':float(row.median()) if len(row) else None})
-          pd.DataFrame(q).to_csv('close_extract/target_row_stats.csv',index=False,encoding='utf-8-sig')
-          print(json.dumps(q,ensure_ascii=False),flush=True)
+          os.makedirs('factor_extract',exist_ok=True)
+          TARGET_CODES=set('''100009,100016,100087,100096,100117,100177,100196,100220,100236,100567,100726,100795,110001,110002,110003,110004,110005,110006,110007,110008,110009,110010,110011,110012,110013,110015,110016,110017,110018,110019,110020,110021,110022,110023,110024,110025,110026,110027,110028,110029,110030,110031,110032,110033,110034,110035,110036,110037,110038,110039,110040,110078,110219,110227,110232,110317,110325,110368,110398,110418,110423,110488,110567,110598,110874,110971,113001,113002,113003,113005,113006,113007,113008,113009,113010,113011,113012,113013,113014,113015,113016,113501,113502,123001,123002,125002,125024,125069,125089,125302,125488,125528,125572,125629,125630,125709,125729,125731,125822,125887,125930,125932,125936,125937,125959,125960,125969,126002,126301,126630,126729,127001,127002,127003,127004,128001,128002,128003,128004,128005,128006,128007,128008,128009,128010,128011,128012,128013,128014,128015,128016,128017,128018,128019,128020,128021,128022,128023,128025,128031,128233,129031'''.split(','))
+          keys=['Close','Amt','ConvV','ConvPrem','Outstanding','YTM','Ptm']
+          longs=[]
+          summary=[]
+          for key in keys:
+              p=f'repo/data/{key}.pkl'
+              x=pd.read_pickle(p)
+              idx=pd.to_datetime(x.index,errors='coerce')
+              x=x.copy(); x.index=idx
+              x=x.loc[(x.index>=pd.Timestamp('2002-01-01'))&(x.index<=pd.Timestamp('2017-12-29'))]
+              old_cols=list(x.columns)
+              keep=[]
+              code_map={}
+              for c in old_cols:
+                  s=str(c)
+                  m=re.search(r'(?<!\d)(\d{6})(?!\d)',s)
+                  if not m:
+                      ds=''.join(ch for ch in s if ch.isdigit())
+                      code=ds[:6] if len(ds)>=6 else None
+                  else:
+                      code=m.group(1)
+                  if code in TARGET_CODES:
+                      keep.append(c); code_map[c]=code
+              y=x[keep].copy()
+              st=y.stack(dropna=True).rename(key).reset_index()
+              st.columns=['date','raw_col',key]
+              st['code']=st['raw_col'].map(code_map)
+              st=st[['date','code',key]]
+              longs.append(st)
+              summary.append({'key':key,'shape_rows':len(x),'shape_cols_all':len(old_cols),'target_cols':len(keep),'nonnull_target':len(st),'date_min':x.index.min().strftime('%Y-%m-%d') if len(x) else '','date_max':x.index.max().strftime('%Y-%m-%d') if len(x) else ''})
+              print(key,summary[-1],flush=True)
+          out=longs[0]
+          for z in longs[1:]:
+              out=out.merge(z,on=['date','code'],how='outer',validate='one_to_one')
+          out=out.sort_values(['date','code'])
+          out['date']=pd.to_datetime(out['date']).dt.strftime('%Y-%m-%d')
+          out.to_csv('factor_extract/historical_factors_2002_2017.csv.gz',index=False,encoding='utf-8-sig',compression='gzip')
+          pd.DataFrame(summary).to_csv('factor_extract/matrix_summary.csv',index=False,encoding='utf-8-sig')
+          cov=out.groupby('date')[keys].count().reset_index()
+          cov.to_csv('factor_extract/daily_field_coverage.csv',index=False,encoding='utf-8-sig')
+          print('OUT_ROWS',len(out),'DATE_RANGE',out['date'].min(),out['date'].max(),flush=True)
+          print('OUT_CODE_COUNT',out['code'].nunique(),flush=True)
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: cb-close-pkl-extract
-          path: close_extract/
+          name: cb-jsl-history-factors
+          path: factor_extract/

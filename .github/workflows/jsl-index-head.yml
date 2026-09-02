@@ -1,0 +1,28 @@
+name: jsl-index-head
+on:
+  push:
+    paths: ['.github/workflows/jsl-index-head.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - shell: bash
+        run: |
+          python -m pip install -q --disable-pip-version-check akshare pandas
+          python - <<'PY'
+          import os
+          import akshare as ak
+          os.makedirs('out',exist_ok=True)
+          df=ak.bond_cb_index_jsl()
+          print('SHAPE',df.shape,'COLS',list(df.columns),flush=True)
+          print(df.head(5).to_string(index=False),flush=True)
+          df.head(20).to_csv('out/jsl_head.csv',index=False,encoding='utf-8-sig')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jsl-index-head
+          path: out/

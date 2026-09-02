@@ -1,0 +1,44 @@
+name: cb-static-info-bulk
+on:
+  push:
+    paths: ['.github/workflows/cb-static-info-bulk.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - shell: bash
+        run: |
+          python -m pip install -q --disable-pip-version-check akshare pandas
+          python - <<'PY'
+          import os,time
+          import pandas as pd
+          import akshare as ak
+          os.makedirs('out',exist_ok=True)
+          codes='''100009,100016,100087,100096,100117,100177,100196,100220,100236,100567,100726,100795,110001,110002,110003,110004,110005,110006,110007,110008,110009,110010,110011,110012,110013,110015,110016,110017,110018,110019,110020,110021,110022,110023,110024,110025,110026,110027,110028,110029,110030,110031,110032,110033,110034,110035,110036,110037,110038,110039,110040,110078,110219,110227,110232,110317,110325,110368,110398,110418,110423,110488,110567,110598,110874,110971,113001,113002,113003,113005,113006,113007,113008,113009,113010,113011,113012,113013,113014,113015,113016,113501,113502,123001,123002,125002,125024,125069,125089,125302,125488,125528,125572,125629,125630,125709,125729,125731,125822,125887,125930,125932,125936,125937,125959,125960,125969,126002,126301,126630,126729,127001,127002,127003,127004,128001,128002,128003,128004,128005,128006,128007,128008,128009,128010,128011,128012,128013,128014,128015,128016,128017,128018,128019,128020,128021,128022,128023,128025,128031,128233,129031'''.split(',')
+          keys=['BOND_CODE','BOND_NAME','STOCK_CODE','VALUE_DATE','EXPIRE_DATE','LISTING_DATE','DELIST_DATE','INTEREST_RATE_EXPLAIN','REDEEM_CLAUSE','ISSUE_SCALE','ACTUAL_ISSUE_SCALE','CONVERT_STOCK_PRICE','INITIAL_CONVERT_PRICE']
+          rec=[]
+          for i,code in enumerate(codes,1):
+              row={'bond_code':code,'ok':False}
+              err=''
+              for attempt in range(3):
+                  try:
+                      d=ak.bond_zh_cov_info(symbol=code)
+                      if d is not None and len(d):
+                          a=d.iloc[0]
+                          row['ok']=True
+                          for k in keys: row[k]=a.get(k)
+                      break
+                  except Exception as e:
+                      err=repr(e); time.sleep(1+attempt)
+              if not row['ok']: row['error']=err
+              rec.append(row); print(i,'/',len(codes),row,flush=True); time.sleep(.1)
+          pd.DataFrame(rec).to_csv('out/static_info_142.csv',index=False,encoding='utf-8-sig')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cb-static-info-bulk
+          path: out/

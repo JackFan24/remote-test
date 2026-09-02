@@ -1,0 +1,49 @@
+name: jsl-index-pagination-test
+on:
+  push:
+    paths: ['.github/workflows/jsl-index-pagination-test.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - shell: bash
+        run: |
+          python -m pip install -q --disable-pip-version-check requests pandas
+          python - <<'PY'
+          import os,json
+          import requests,pandas as pd
+          os.makedirs('out',exist_ok=True)
+          url='https://www.jisilu.cn/webapi/cb/index_history/'
+          tests=[
+            ('plain',{}),('rp5000',{'rp':5000}),('limit5000',{'limit':5000}),
+            ('page1rp5000',{'page':1,'rp':5000}),('page2rp250',{'page':2,'rp':250}),
+            ('start2017',{'start_date':'2017-12-29'}),('date_from2017',{'date_from':'2017-12-29'}),
+            ('offset250',{'offset':250,'limit':250}),('page2',{'page':2})
+          ]
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://www.jisilu.cn/web/data/cb/index'})
+          rec=[]
+          for name,p in tests:
+              try:
+                  r=s.get(url,params=p,timeout=20)
+                  print('\nTEST',name,'URL',r.url,'STATUS',r.status_code,'LEN',len(r.text),'HEAD',r.text[:180],flush=True)
+                  j=r.json(); print('KEYS',list(j) if isinstance(j,dict) else type(j),flush=True)
+                  d=j.get('data',[]) if isinstance(j,dict) else []
+                  df=pd.DataFrame(d)
+                  mn=df['price_dt'].min() if len(df) and 'price_dt' in df else ''
+                  mx=df['price_dt'].max() if len(df) and 'price_dt' in df else ''
+                  print('ROWS',len(df),'RANGE',mn,mx,'COLS',list(df.columns),flush=True)
+                  if name in ('plain','rp5000','page2rp250','offset250'):
+                      df.to_csv(f'out/{name}.csv',index=False,encoding='utf-8-sig')
+                  rec.append({'test':name,'rows':len(df),'min':mn,'max':mx,'url':r.url,'keys':'|'.join(j.keys()) if isinstance(j,dict) else ''})
+              except Exception as e:
+                  print('ERR',name,repr(e),flush=True); rec.append({'test':name,'error':repr(e)})
+          pd.DataFrame(rec).to_csv('out/summary.csv',index=False,encoding='utf-8-sig')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jsl-index-pagination-test
+          path: out/

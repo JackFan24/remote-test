@@ -43,7 +43,7 @@ jobs:
                   if code in TARGET_CODES:
                       keep.append(c); code_map[c]=code
               y=x[keep].copy()
-              st=y.stack(dropna=True).rename(key).reset_index()
+              st=y.stack().rename(key).reset_index()
               st.columns=['date','raw_col',key]
               st['code']=st['raw_col'].map(code_map)
               st=st[['date','code',key]]

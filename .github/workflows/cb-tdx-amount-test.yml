@@ -1,0 +1,56 @@
+name: cb-tdx-amount-test
+on:
+  push:
+    paths: ['.github/workflows/cb-tdx-amount-test.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - shell: bash
+        run: |
+          python -m pip install -q --disable-pip-version-check pytdx pandas
+          python - <<'PY'
+          import os,time,traceback
+          import pandas as pd
+          from pytdx.hq import TdxHq_API
+          from pytdx.config.hosts import hq_hosts
+          os.makedirs('out',exist_ok=True)
+          tests=[('100016',1,'2003-03-03'),('110007',1,'2009-10-16'),('113001',1,'2010-06-18'),('110030',1,'2017-12-29'),('128023',0,'2017-12-29')]
+          server=None
+          for h in hq_hosts:
+              try:
+                  api=TdxHq_API(heartbeat=True,auto_retry=True,raise_exception=True)
+                  if api.connect(h[1],h[2],time_out=2): server=h; break
+              except Exception: pass
+          print('SERVER',server,flush=True)
+          rec=[]
+          if server:
+              for code,mkt,target in tests:
+                  try:
+                      allrows=[]
+                      for start in range(0,6000,800):
+                          z=api.get_security_bars(9,mkt,code,start,800) or []
+                          if not z: break
+                          allrows.extend(z)
+                          if len(z)<800: break
+                      df=pd.DataFrame(allrows)
+                      if len(df):
+                          df['datetime']=pd.to_datetime(df['datetime'],errors='coerce')
+                          df=df.drop_duplicates('datetime').sort_values('datetime')
+                          q=df[df['datetime'].dt.strftime('%Y-%m-%d')==target]
+                          print('\n',code,'ROWS',len(df),'RANGE',df['datetime'].min(),df['datetime'].max(),'TARGET',q.to_dict('records'),flush=True)
+                          df.to_csv(f'out/{code}.csv',index=False,encoding='utf-8-sig')
+                          rec.append({'code':code,'rows':len(df),'first':df['datetime'].min(),'last':df['datetime'].max(),'target_found':len(q),'target_amount':q.iloc[0].get('amount') if len(q) else None,'target_close':q.iloc[0].get('close') if len(q) else None})
+                      else: rec.append({'code':code,'rows':0})
+                  except Exception as e:
+                      print('ERR',code,repr(e),flush=True); traceback.print_exc(); rec.append({'code':code,'error':repr(e)})
+          pd.DataFrame(rec).to_csv('out/summary.csv',index=False,encoding='utf-8-sig')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cb-tdx-amount-test
+          path: out/

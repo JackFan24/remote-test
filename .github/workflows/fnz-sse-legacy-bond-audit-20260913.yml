@@ -1,0 +1,64 @@
+name: fnz-sse-legacy-bond-audit-20260913
+on:
+  push:
+    branches: [fnz-gap-audit-20260913]
+    paths: ['.github/workflows/fnz-sse-legacy-bond-audit-20260913.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Audit official SSE legacy-bond records
+        shell: bash
+        run: |
+          python -m pip install -q requests
+          python - <<'PY'
+          import json, requests, re
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://bond.sse.com.cn/','Accept':'*/*'})
+          url='https://query.sse.com.cn/commonQuery.do'
+          sql_y='COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_ZQSYLTJ_CX_L'
+          pairs=[
+            ('009704','2001-09-04'),('009908','2001-09-21'),('010107','2002-01-30'),
+            ('010103','2002-04-23'),('000696','2002-06-13'),('010107','2002-07-30'),
+            ('009905','2002-08-19'),('009704','2002-09-04'),('009908','2002-09-20')]
+          print('=== SSE YIELD/PRICE EXACT-DATE CHECK ===')
+          for code,d in pairs:
+            p={'jsonCallBack':'jsonpCallback123456','isPagination':'true','pageHelp.pageSize':'500','pageHelp.beginPage':'1','pageHelp.endPage':'1','pageHelp.cacheSize':'1','sqlId':sql_y,'TRADE_DATE':d,'BOND_CODE':code}
+            r=s.get(url,params=p,timeout=30); t=r.text.strip()
+            if t.startswith('jsonpCallback'): t=t[t.find('(')+1:t.rfind(')')]
+            j=json.loads(t); rows=j.get('result') or []
+            print('PAIR',code,d,'ROWS',len(rows),'FIRST',json.dumps(rows[:1],ensure_ascii=False),flush=True)
+          print('=== SSE NET/FULL GLOBAL PARSE ===')
+          sql_nf='COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L'
+          r=s.get(url,params={'sqlId':sql_nf,'isPagination':'false'},timeout=60)
+          j=r.json(); rows=j.get('result') or []
+          print('GLOBAL_ROWS',len(rows),'HTTP',r.status_code,flush=True)
+          def normdate(x): return str(x or '')[:10]
+          def match96_8(x):
+            code=str(x.get('PRODUCT','')).strip()
+            name=str(x.get('PRODUCTNAME',''))
+            return code in {'000896','896'} or ('96国债' in name and any(z in name for z in ['⑻','(8)','（8）','8']))
+          def match96_6(x):
+            code=str(x.get('PRODUCT','')).strip()
+            name=str(x.get('PRODUCTNAME',''))
+            return code in {'000696','696'} or ('96国债' in name and any(z in name for z in ['⑹','(6)','（6）','6']))
+          lo,hi='2001-08-30','2002-12-13'
+          for label,fn in [('96BOND8',match96_8),('96BOND6',match96_6)]:
+            hit=[x for x in rows if fn(x) and lo<=normdate(x.get('TXDATE'))<=hi]
+            hit.sort(key=lambda x:normdate(x.get('TXDATE')))
+            print(label,'COUNT',len(hit),'FIRST',json.dumps(hit[:3],ensure_ascii=False),'LAST',json.dumps(hit[-3:],ensure_ascii=False),flush=True)
+            if label=='96BOND8':
+              pre=[x for x in hit if normdate(x.get('TXDATE'))<'2001-12-31']
+              print('96BOND8_PRE_20011231',len(pre),json.dumps(pre[:10],ensure_ascii=False),flush=True)
+              anchor=[x for x in hit if normdate(x.get('TXDATE'))=='2001-12-31']
+              print('96BOND8_ANCHOR',json.dumps(anchor,ensure_ascii=False),flush=True)
+            if label=='96BOND6':
+              d=[x for x in hit if normdate(x.get('TXDATE')) in {'2002-06-12','2002-06-13','2002-06-14','2002-06-17'}]
+              print('96BOND6_AROUND_20020613',json.dumps(d,ensure_ascii=False),flush=True)
+          PY

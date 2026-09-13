@@ -1,0 +1,25 @@
+name: fnz-sse-html-min
+on:
+  push:
+    branches: [fnz-gap-audit-20260913]
+    paths: ['.github/workflows/fnz-sse-html-min.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  min:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Fetch SSE page HTML only
+        shell: bash
+        run: |
+          mkdir -p out
+          curl -L --max-time 15 -A 'Mozilla/5.0' 'https://bond.sse.com.cn/data/statistics/Statistics/netfull/index_his.shtml' -o out/page.html || true
+          grep -Eo '<script[^>]+src="[^"]+"' out/page.html | sed -E 's/.*src="([^"]+)"/\1/' > out/script_urls.txt || true
+          grep -Ein 'netfull|query|ajax|json|script' out/page.html > out/page_hits.txt || true
+          wc -c out/page.html; cat out/script_urls.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-sse-html-min-results
+          path: out/

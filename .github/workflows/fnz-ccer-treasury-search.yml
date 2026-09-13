@@ -1,0 +1,58 @@
+name: fnz-ccer-treasury-search
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-ccer-treasury-search.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Search CCER catalog using its published anonymous visitor flow
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os,json,re,requests
+          out='ccer_treasury_search'; os.makedirs(out,exist_ok=True)
+          base='https://www.ccerdata.cn'
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Accept-Language':'zh-CN,zh;q=0.9'})
+          login=s.get(base+'/login?target=/database',timeout=30)
+          js=s.get(base+'/js/login.js',timeout=30).text
+          m=re.search(r'postnologin=function\(\).*?post\(["\'](/login/signin)["\'],\{User:["\']([^"\']+)["\'],Password:["\']([^"\']+)["\']\}',js,re.S)
+          if not m: raise SystemExit('Could not locate CCER published anonymous login flow')
+          endpoint,user,pwd=m.groups()
+          r=s.post(base+endpoint,data={'User':user,'Password':pwd},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
+          print('ANON_LOGIN',r.status_code,r.text[:300],flush=True)
+          terms=['国债现货交易','国债现货','国债交易','国债','96国债(8)','96国债','000896','债券现货']
+          allrows=[]
+          for idx,q in enumerate(terms):
+              rr=s.get(base+'/api/product/getsearch',params={'text':q,'page':1},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
+              print('\nQUERY',q,'HTTP',rr.status_code,'URL',rr.url,flush=True)
+              try: j=rr.json()
+              except Exception as e:
+                  print('BODY',rr.text[:1200].replace('\n',' '),'JSONERR',repr(e),flush=True); continue
+              open(f'{out}/q{idx}.json','w',encoding='utf-8').write(json.dumps(j,ensure_ascii=False,indent=2))
+              data=j.get('data') or j.get('Data') or []
+              print('TOTAL',j.get('total',j.get('Total')),'ROWS',len(data),flush=True)
+              for x in data:
+                  allrows.append({'query':q,**x})
+                  print('RESULT',json.dumps(x,ensure_ascii=False),flush=True)
+          open(out+'/all_results.json','w',encoding='utf-8').write(json.dumps(allrows,ensure_ascii=False,indent=2))
+          print('\nUNIQUE_RESULTS',flush=True)
+          seen=set()
+          for x in allrows:
+              k=(x.get('subLibraryId'),x.get('viewId'),x.get('tableId'),x.get('fieldId'))
+              if k in seen: continue
+              seen.add(k)
+              print(json.dumps(x,ensure_ascii=False),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-ccer-treasury-search
+          path: ccer_treasury_search/

@@ -10,17 +10,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Print RequireJS calls and page tail
+      - name: Inspect js_statistical netfull query
         shell: bash
         run: |
           python - <<'PY'
           import re,requests
-          u='https://bond.sse.com.cn/data/statistics/Statistics/netfull/'
-          r=requests.get(u,headers={'User-Agent':'Mozilla/5.0','Referer':'https://bond.sse.com.cn/'},timeout=30)
-          html=r.text
-          print('HTTP',r.status_code,'LEN',len(html),flush=True)
-          for m in re.finditer(r'require\s*\(',html,re.I):
-              a=max(0,m.start()-500); b=min(len(html),m.start()+4000)
-              print('\nREQUIRE_CTX',html[a:b].replace('\n',' ')[:4500],flush=True)
-          print('\nHTML_TAIL',html[-12000:].replace('\n',' ')[:12000],flush=True)
+          u='https://bond.sse.com.cn/xhtml/js/js_statistical.js'
+          r=requests.get(u,headers={'User-Agent':'Mozilla/5.0','Referer':'https://bond.sse.com.cn/data/statistics/Statistics/netfull/'},timeout=30)
+          js=r.text
+          print('HTTP',r.status_code,'LEN',len(js),flush=True)
+          needles=['js_insertJjyqj','tDate','keywordsearch','COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L','commonQuery.do','Jjyqj','JJYQJ']
+          for pat in needles:
+            ms=list(re.finditer(re.escape(pat),js,re.I))
+            print('\nPAT',pat,'COUNT',len(ms),flush=True)
+            for m in ms[:15]:
+              a=max(0,m.start()-1800); b=min(len(js),m.end()+3500)
+              print('CTX',js[a:b].replace('\n',' ')[:5500],flush=True)
           PY

@@ -1,0 +1,76 @@
+name: fnz-ccer-anon-database
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-ccer-anon-database.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Anonymous login then inspect database page and product APIs
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os,re,json
+          from urllib.parse import urljoin
+          import requests
+
+          out='ccer_anon_db'; os.makedirs(out,exist_ok=True)
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Accept-Language':'zh-CN,zh;q=0.9','X-Requested-With':'XMLHttpRequest'})
+          base='https://www.ccerdata.cn'
+          r=s.get(base+'/login?target=/database',timeout=30)
+          print('LOGIN_GET',r.status_code,r.url,'cookies',s.cookies.get_dict(),flush=True)
+          # Official anonymous visitor login defined by CCER's own login.js.
+          rr=s.post(base+'/login/signin',data={'User':'anonymous','Password':'123456'},timeout=30)
+          print('SIGNIN',rr.status_code,rr.url,'ctype',rr.headers.get('content-type'),'cookies',s.cookies.get_dict(),flush=True)
+          print('SIGNIN_BODY',rr.text[:1000].replace('\n',' '),flush=True)
+          try: print('SIGNIN_JSON',json.dumps(rr.json(),ensure_ascii=False),flush=True)
+          except: pass
+
+          s.headers.pop('X-Requested-With',None)
+          d=s.get(base+'/database',timeout=30,allow_redirects=True)
+          print('DATABASE_GET',d.status_code,d.url,'bytes',len(d.content),'cookies',s.cookies.get_dict(),flush=True)
+          open(out+'/database.html','wb').write(d.content)
+          txt=d.text
+          print('TITLE',re.findall(r'<title>(.*?)</title>',txt,re.I|re.S)[:3],flush=True)
+          scripts=[urljoin(d.url,x) for x in re.findall(r'<script[^>]+src=["\']([^"\']+)["\']',txt,re.I)]
+          print('SCRIPTS',len(scripts),flush=True)
+          for x in scripts: print('SCRIPT_URL',x,flush=True)
+          # Surface links, inline URLs and product-related text.
+          for pat in [r'href=["\']([^"\']+)["\']', r'url\s*[:=]\s*["\']([^"\']+)["\']', r'["\'](/[^"\']*(?:product|database|search|query|preview)[^"\']*)["\']']:
+              vals=re.findall(pat,txt,re.I)
+              print('HTML_PATTERN',pat,'COUNT',len(vals),flush=True)
+              for v in vals[:150]: print(' ',v[:700],flush=True)
+          for kw in ['国债','债券','产品搜索','搜索产品','基础表','聚合表','预览']:
+              if kw in txt: print('HTML_HAS',kw,flush=True)
+
+          for j,u in enumerate(dict.fromkeys(scripts)):
+              try:
+                  z=s.get(u,timeout=30); t=z.text
+                  open(f'{out}/js_{j}.js','w',encoding='utf-8',errors='replace').write(t)
+                  if re.search(r'product|database|preview|search|query|subLibrary|tableId|viewId|国债|债券',t,re.I):
+                      print('\nJS',j,u,'bytes',len(z.content),flush=True)
+                      # Extract endpoint-like string literals first.
+                      eps=[]
+                      for m in re.finditer(r'["\'](/[^"\']{1,180})["\']',t):
+                          x=m.group(1)
+                          if re.search(r'product|database|preview|search|query|field|table|library|form',x,re.I): eps.append(x)
+                      for e in list(dict.fromkeys(eps))[:200]: print('ENDPOINT',e,flush=True)
+                      # Print contextual snippets around relevant terms.
+                      for term in ['gotoproduct','productsearch','search','preview','subLibraryId','tableId','viewId','database']:
+                          for m in list(re.finditer(term,t,re.I))[:15]:
+                              a=max(0,m.start()-450); b=min(len(t),m.end()+850)
+                              print('CTX',term,re.sub(r'\s+',' ',t[a:b])[:1600],flush=True)
+              except Exception as e: print('JSERR',u,repr(e),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-ccer-anon-database
+          path: ccer_anon_db/

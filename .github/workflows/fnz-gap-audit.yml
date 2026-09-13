@@ -1,0 +1,98 @@
+name: fnz-gap-audit
+on:
+  push:
+    branches: [fnz-gap-audit-20260913]
+    paths: ['.github/workflows/fnz-gap-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Probe old quote sources and trading calendar
+        shell: bash
+        run: |
+          python -m pip install -q requests pandas akshare
+          python - <<'PY'
+          import os, json, traceback, requests, pandas as pd
+          from io import StringIO
+          os.makedirs('out', exist_ok=True)
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://q.stock.sohu.com/'})
+          tests=[]
+          def save(name, text):
+              open(f'out/{name}.txt','w',encoding='utf-8').write(text)
+          def rec(name, url, status='', nrows='', first='', last='', note=''):
+              tests.append(dict(name=name,url=url,status=status,rows=nrows,first=first,last=last,note=note))
+          # Eastmoney SSE bond
+          try:
+              url='https://push2his.eastmoney.com/api/qt/stock/kline/get'
+              p={'secid':'1.000896','klt':'101','fqt':'0','beg':'20010830','end':'20011231','fields1':'f1,f2,f3,f4,f5,f6','fields2':'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61'}
+              r=s.get(url,params=p,timeout=30); save('eastmoney_000896',r.text[:200000]); j=r.json(); kl=(j.get('data') or {}).get('klines') or []
+              rows=[]
+              for x in kl:
+                  a=x.split(','); rows.append(a)
+              if rows:
+                  pd.DataFrame(rows).to_csv('out/eastmoney_000896.csv',index=False,header=False,encoding='utf-8-sig')
+              rec('eastmoney_000896',r.url,r.status_code,len(rows),rows[0][0] if rows else '',rows[-1][0] if rows else '',str((j.get('data') or {}).get('name','')))
+          except Exception as e: rec('eastmoney_000896','',note=repr(e))
+          # Tencent, qfq and none
+          for tag,param in [('tencent_none','sh000896,day,2001-08-30,2001-12-31,640'),('tencent_qfq','sh000896,day,2001-08-30,2001-12-31,640,qfq')]:
+              try:
+                  url='https://web.ifzq.gtimg.cn/appstock/app/fqkline/get'; r=s.get(url,params={'param':param},timeout=30); save(tag,r.text[:200000]); j=r.json(); d=(j.get('data') or {}).get('sh000896') or {}; arr=d.get('day') or d.get('qfqday') or []
+                  if arr: pd.DataFrame(arr).to_csv(f'out/{tag}.csv',index=False,header=False,encoding='utf-8-sig')
+                  rec(tag,r.url,r.status_code,len(arr),arr[0][0] if arr else '',arr[-1][0] if arr else '',str(d.get('qt',[])[:1]))
+              except Exception as e: rec(tag,'',note=repr(e))
+          # NetEase variants
+          for code in ['0000896','1000896','000896']:
+              tag='netease_'+code
+              try:
+                  url='https://quotes.money.163.com/service/chddata.html'; p={'code':code,'start':'20010830','end':'20011231','fields':'TCLOSE;HIGH;LOW;TOPEN;VOTURNOVER;VATURNOVER'}
+                  r=s.get(url,params=p,timeout=30); txt=r.content.decode('gbk','replace'); save(tag,txt[:200000]); lines=[x for x in txt.splitlines() if x.strip()]
+                  if len(lines)>1: open(f'out/{tag}.csv','w',encoding='utf-8-sig').write(txt)
+                  rec(tag,r.url,r.status_code,max(0,len(lines)-1),lines[-1].split(',')[0] if len(lines)>1 else '',lines[1].split(',')[0] if len(lines)>1 else '',lines[0][:120] if lines else '')
+              except Exception as e: rec(tag,'',note=repr(e))
+          # Sohu exact API
+          try:
+              url='https://q.stock.sohu.com/hisHq'; p={'code':'cn_000896','start':'20010830','end':'20011231','stat':'1','order':'A','period':'d'}
+              r=s.get(url,params=p,timeout=30); save('sohu_000896',r.text[:200000]); j=r.json(); obj=j[0] if isinstance(j,list) and j else {}; arr=obj.get('hq') or []
+              if arr: pd.DataFrame(arr).to_csv('out/sohu_000896.csv',index=False,header=False,encoding='utf-8-sig')
+              rec('sohu_000896',r.url,r.status_code,len(arr),arr[0][0] if arr else '',arr[-1][0] if arr else '',str(obj.get('status','')))
+          except Exception as e: rec('sohu_000896','',note=repr(e))
+          # Sina via AKShare
+          try:
+              import akshare as ak
+              d=ak.bond_zh_hs_daily(symbol='sh000896'); d['date']=pd.to_datetime(d['date']); x=d[(d['date']>='2001-08-30')&(d['date']<='2001-12-31')]
+              d.to_csv('out/sina_akshare_000896_all.csv',index=False,encoding='utf-8-sig'); x.to_csv('out/sina_akshare_000896_2001gap.csv',index=False,encoding='utf-8-sig')
+              rec('sina_akshare_000896','ak.bond_zh_hs_daily(sh000896)','ok',len(x),str(d['date'].min().date()) if len(d) else '',str(d['date'].max().date()) if len(d) else '','full_rows='+str(len(d)))
+          except Exception as e: rec('sina_akshare_000896','',note=repr(e))
+          # Sina raw klc
+          try:
+              url='https://finance.sina.com.cn/realstock/company/sh000896/hisdata/klc_kl.js'; r=s.get(url,timeout=30); save('sina_raw_000896',r.text[:500000]); rec('sina_raw_000896',r.url,r.status_code,'','','','len='+str(len(r.text)))
+          except Exception as e: rec('sina_raw_000896','',note=repr(e))
+          # Shanghai Composite official-ish date cross-check via Eastmoney
+          try:
+              url='https://push2his.eastmoney.com/api/qt/stock/kline/get'; p={'secid':'1.000001','klt':'101','fqt':'0','beg':'20010830','end':'20021213','fields1':'f1,f2,f3,f4,f5,f6','fields2':'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61'}
+              r=s.get(url,params=p,timeout=30); j=r.json(); kl=(j.get('data') or {}).get('klines') or []; rows=[x.split(',') for x in kl]
+              pd.DataFrame(rows).to_csv('out/sh000001_calendar_eastmoney.csv',index=False,header=False,encoding='utf-8-sig')
+              rec('sh000001_calendar_eastmoney',r.url,r.status_code,len(rows),rows[0][0] if rows else '',rows[-1][0] if rows else '')
+          except Exception as e: rec('sh000001_calendar_eastmoney','',note=repr(e))
+          # Shanghai Composite via AKShare
+          try:
+              import akshare as ak
+              d=ak.stock_zh_index_daily(symbol='sh000001'); d['date']=pd.to_datetime(d['date']); x=d[(d['date']>='2001-08-30')&(d['date']<='2002-12-13')]
+              x.to_csv('out/sh000001_calendar_akshare.csv',index=False,encoding='utf-8-sig')
+              rec('sh000001_calendar_akshare','ak.stock_zh_index_daily(sh000001)','ok',len(x),str(x['date'].min().date()) if len(x) else '',str(x['date'].max().date()) if len(x) else '')
+          except Exception as e: rec('sh000001_calendar_akshare','',note=repr(e))
+          pd.DataFrame(tests).to_csv('out/probe_summary.csv',index=False,encoding='utf-8-sig')
+          print(pd.DataFrame(tests).to_string(index=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-gap-audit-results
+          path: out/

@@ -1,0 +1,84 @@
+name: fnz-sse-jjyqj-exact-20260913
+on:
+  push:
+    branches: [fnz-gap-audit-20260913]
+    paths: ['.github/workflows/fnz-sse-jjyqj-exact-20260913.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  query:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Query exact SSE JJYQJ endpoint
+        shell: bash
+        run: |
+          python -m pip install -q requests
+          python - <<'PY'
+          import requests, json, re, sys
+          s=requests.Session()
+          s.headers.update({
+            'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/155 Safari/537.36',
+            'Referer':'https://bond.sse.com.cn/data/statistics/overview/bondprice/',
+            'Origin':'https://bond.sse.com.cn',
+            'Accept':'*/*',
+            'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8',
+          })
+          url='https://query.sse.com.cn/commonQuery.do'
+          sql='COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L'
+          def parse_text(t):
+            t=t.strip()
+            if t.startswith('jsonpCallback') and '(' in t:
+              t=t[t.find('(')+1:t.rfind(')')]
+            return json.loads(t)
+          def q(code,start,end):
+            p={
+              'isPagination':'true',
+              'pageHelp.pageSize':'1000',
+              'pageHelp.pageNo':'1',
+              'pageHelp.beginPage':'1',
+              'pageHelp.cacheSize':'5',
+              'sqlId':sql,
+              'START_TRADE_DATE':start,
+              'END_TRADE_DATE':end,
+              'PRODUCT':code,
+              'BONDCODE':code,
+              'jsonCallBack':'jsonpCallback',
+            }
+            r=s.post(url,data=p,timeout=40)
+            print('HTTP',code,start,end,r.status_code,'URL',r.url,flush=True)
+            print('RAW_HEAD',r.text[:500].replace('\n',' '),flush=True)
+            try: j=parse_text(r.text)
+            except Exception as e:
+              print('PARSE_ERROR',repr(e),flush=True); return []
+            rows=j.get('result') or []
+            ph=j.get('pageHelp') or {}
+            print('QUERY',code,start,end,'ROWS',len(rows),'PAGEHELP',json.dumps(ph,ensure_ascii=False),flush=True)
+            if rows:
+              print('KEYS',sorted(rows[0].keys()),flush=True)
+              for x in rows:
+                print('ROW',json.dumps(x,ensure_ascii=False,sort_keys=True),flush=True)
+            return rows
+          print('=== ANCHOR ===')
+          q('000896','2001-12-31','2001-12-31')
+          print('=== FULL 2001 RANGE ===')
+          q('000896','2001-08-30','2001-12-31')
+          print('=== PROBLEM / XD DATES ===')
+          pairs=[
+            ('009704','2001-09-04'),('009908','2001-09-21'),
+            ('010107','2002-01-30'),('010103','2002-04-23'),('000696','2002-06-13'),
+            ('010107','2002-07-30'),('009905','2002-08-19'),('009704','2002-09-04'),('009908','2002-09-20')]
+          for c,d in pairs: q(c,d,d)
+          print('=== ADJACENT WINDOWS ===')
+          windows=[
+            ('009704','2001-09-03','2001-09-06'),('009908','2001-09-20','2001-09-25'),
+            ('010107','2002-01-29','2002-01-31'),('010103','2002-04-22','2002-04-24'),
+            ('000696','2002-06-12','2002-06-14'),('010107','2002-07-29','2002-08-01'),
+            ('009905','2002-08-16','2002-08-20'),('009704','2002-09-03','2002-09-05'),
+            ('009908','2002-09-19','2002-09-23')]
+          for c,a,b in windows: q(c,a,b)
+          PY

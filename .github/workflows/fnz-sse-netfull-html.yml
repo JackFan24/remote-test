@@ -1,0 +1,28 @@
+name: fnz-sse-netfull-html
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-sse-netfull-html.yml'
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Print scripts and inline request config
+        shell: bash
+        run: |
+          python - <<'PY'
+          import re,requests,urllib.parse
+          u='https://bond.sse.com.cn/data/statistics/Statistics/netfull/'
+          h={'User-Agent':'Mozilla/5.0','Referer':'https://bond.sse.com.cn/'}
+          r=requests.get(u,headers=h,timeout=30); print('HTTP',r.status_code,'LEN',len(r.text),flush=True)
+          html=r.text
+          for src in re.findall(r'<script[^>]+src=["\']([^"\']+)',html,re.I):
+              print('SRC',urllib.parse.urljoin(r.url,src),flush=True)
+          for m in re.finditer(r'<script(?:\s[^>]*)?>(.*?)</script>',html,re.I|re.S):
+              t=m.group(1).strip()
+              if t and any(x.lower() in t.lower() for x in ['query','sql','date','bond','netfull','ajax']):
+                  print('INLINE',t[:10000].replace('\n',' '),flush=True)
+          PY

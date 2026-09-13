@@ -10,19 +10,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Print scripts and inline request config
+      - name: Print RequireJS calls and page tail
         shell: bash
         run: |
           python - <<'PY'
-          import re,requests,urllib.parse
+          import re,requests
           u='https://bond.sse.com.cn/data/statistics/Statistics/netfull/'
-          h={'User-Agent':'Mozilla/5.0','Referer':'https://bond.sse.com.cn/'}
-          r=requests.get(u,headers=h,timeout=30); print('HTTP',r.status_code,'LEN',len(r.text),flush=True)
+          r=requests.get(u,headers={'User-Agent':'Mozilla/5.0','Referer':'https://bond.sse.com.cn/'},timeout=30)
           html=r.text
-          for src in re.findall(r'<script[^>]+src=["\']([^"\']+)',html,re.I):
-              print('SRC',urllib.parse.urljoin(r.url,src),flush=True)
-          for m in re.finditer(r'<script(?:\s[^>]*)?>(.*?)</script>',html,re.I|re.S):
-              t=m.group(1).strip()
-              if t and any(x.lower() in t.lower() for x in ['query','sql','date','bond','netfull','ajax']):
-                  print('INLINE',t[:10000].replace('\n',' '),flush=True)
+          print('HTTP',r.status_code,'LEN',len(html),flush=True)
+          for m in re.finditer(r'require\s*\(',html,re.I):
+              a=max(0,m.start()-500); b=min(len(html),m.start()+4000)
+              print('\nREQUIRE_CTX',html[a:b].replace('\n',' ')[:4500],flush=True)
+          print('\nHTML_TAIL',html[-12000:].replace('\n',' ')[:12000],flush=True)
           PY

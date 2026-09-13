@@ -1,0 +1,68 @@
+name: fnz-sina-000896-paths
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-sina-000896-paths.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -q akshare py-mini-racer requests
+      - name: Fetch and decode Sina KLC variants
+        shell: bash
+        run: |
+          mkdir -p sina_000896_paths
+          python - <<'PY'
+          import os,json,requests
+          from py_mini_racer import py_mini_racer
+          from akshare.stock.cons import hk_js_decode
+
+          syms=['sh000896','sh000696','sz101968','sh101968']
+          variants=[
+            ('hisdata','https://finance.sina.com.cn/realstock/company/{}/hisdata/klc_kl.js?d=2026_09_13'),
+            ('hisdata_klc2','https://finance.sina.com.cn/realstock/company/{}/hisdata_klc2/klc_kl.js'),
+            ('hisdata_old_d2001','https://finance.sina.com.cn/realstock/company/{}/hisdata/klc_kl.js?d=2001_12_31'),
+            ('hisdata_old_d2002','https://finance.sina.com.cn/realstock/company/{}/hisdata/klc_kl.js?d=2002_01_04'),
+          ]
+          js=py_mini_racer.MiniRacer(); js.eval(hk_js_decode)
+          sess=requests.Session(); sess.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://finance.sina.com.cn/'})
+          for sym in syms:
+            for label,tpl in variants:
+              url=tpl.format(sym)
+              try:
+                r=sess.get(url,timeout=30)
+                text=r.text
+                open(f'sina_000896_paths/{sym}_{label}.txt','w',encoding='utf-8').write(text)
+                print('\nFETCH',sym,label,'HTTP',r.status_code,'BYTES',len(r.content),'URL',r.url,flush=True)
+                print('HEAD',text[:180].replace('\n',' '),flush=True)
+                rows=[]
+                try:
+                  raw=text.split('=',1)[1].split(';',1)[0].replace('"','')
+                  rows=js.call('d',raw) or []
+                except Exception as e:
+                  print('DECODE_ERR',repr(e),flush=True)
+                print('ROWS',len(rows),flush=True)
+                if rows:
+                  dates=[str(x.get('date','')) for x in rows if isinstance(x,dict)]
+                  print('FIRST',dates[0] if dates else '',json.dumps(rows[0],ensure_ascii=False),flush=True)
+                  print('LAST',dates[-1] if dates else '',json.dumps(rows[-1],ensure_ascii=False),flush=True)
+                  y2001=[x for x in rows if str(x.get('date','')).startswith('2001-')]
+                  print('Y2001',len(y2001), 'FIRST2001', json.dumps(y2001[0],ensure_ascii=False) if y2001 else '', 'LAST2001', json.dumps(y2001[-1],ensure_ascii=False) if y2001 else '', flush=True)
+                  open(f'sina_000896_paths/{sym}_{label}_decoded.json','w',encoding='utf-8').write(json.dumps(rows,ensure_ascii=False))
+              except Exception as e:
+                print('ERR',sym,label,repr(e),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-sina-000896-paths
+          path: sina_000896_paths/

@@ -1,0 +1,60 @@
+name: fnz-ccer-treasury-view
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-ccer-treasury-view.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Inspect treasury spot view metadata and sample data
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os,json,re,requests
+          out='ccer_treasury_view'; os.makedirs(out,exist_ok=True)
+          base='https://www.ccerdata.cn'; lid='9012'; sid='901201'; vid='9028'
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Accept-Language':'zh-CN,zh;q=0.9'})
+          s.get(base+'/login?target=/database',timeout=30)
+          js=s.get(base+'/js/login.js',timeout=30).text
+          m=re.search(r'postnologin=function\(\).*?post\(["\'](/login/signin)["\'],\{User:["\']([^"\']+)["\'],Password:["\']([^"\']+)["\']\}',js,re.S)
+          endpoint,user,pwd=m.groups()
+          r=s.post(base+endpoint,data={'User':user,'Password':pwd},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
+          print('ANON_LOGIN',r.status_code,r.text[:200],flush=True)
+          page=s.get(base+'/database/view',params={'sid':sid,'vid':vid},timeout=30)
+          print('VIEW_PAGE',page.status_code,page.url,'bytes',len(page.content),flush=True)
+          open(out+'/view_page.html','wb').write(page.content)
+          rr=s.get(base+'/product/getView',params={'id':vid,'sid':sid,'lid':lid},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
+          print('GETVIEW',rr.status_code,rr.url,'ctype',rr.headers.get('content-type'),flush=True)
+          print('GETVIEW_HEAD',rr.text[:3000].replace('\n',' '),flush=True)
+          v=rr.json()
+          open(out+'/view_metadata.json','w',encoding='utf-8').write(json.dumps(v,ensure_ascii=False,indent=2))
+          keys=['id','fullName','libraryId','libraryName','subLibraryId','subLibraryName','total','startTime','endTime','maxNum','authType','previewDisabled','onlyBuy','isDemo','tryStart','tryEnd','tryNum','isGroupPublic','description']
+          print('META',json.dumps({k:v.get(k) for k in keys},ensure_ascii=False),flush=True)
+          gf=v.get('groupFields') or {}
+          allfields=[]
+          for grp,fs in gf.items():
+              print('\nGROUP',grp,'N',len(fs),flush=True)
+              for f in fs:
+                  rec={k:f.get(k) for k in ['id','fullName','name','dataType','queryType','required','controlType','queryParams','controlParams','description']}
+                  allfields.append(rec)
+                  print('FIELD',json.dumps(rec,ensure_ascii=False),flush=True)
+          # Sample endpoint using all visible fields; no query conditions.
+          field_ids=[str(x['id']) for x in allfields if x.get('id') is not None][:50]
+          payload={'libraryId':lid,'subLibraryId':sid,'viewId':vid,'fields':field_ids,'conditions':[],'join':[]}
+          sm=s.get(base+'/Product/Sample',params={'data':json.dumps(payload,separators=(',',':')),'page':1,'rows':20},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
+          print('\nSAMPLE_HTTP',sm.status_code,sm.url,'CTYPE',sm.headers.get('content-type'),flush=True)
+          print('SAMPLE_BODY',sm.text[:12000].replace('\n',' '),flush=True)
+          open(out+'/sample.json','w',encoding='utf-8').write(sm.text)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-ccer-treasury-view
+          path: ccer_treasury_view/

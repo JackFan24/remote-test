@@ -1,0 +1,65 @@
+name: fnz-ccer-000896-preview
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-ccer-000896-preview.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Query official CCER anonymous preview for 000896
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os,json,re,csv,requests
+          out='ccer_000896_preview'; os.makedirs(out,exist_ok=True)
+          base='https://www.ccerdata.cn'
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Accept-Language':'zh-CN,zh;q=0.9'})
+          s.get(base+'/login?target=/database',timeout=30)
+          loginjs=s.get(base+'/js/login.js',timeout=30).text
+          m=re.search(r'postnologin=function\(\).*?post\(["\'](/login/signin)["\'],\{User:["\']([^"\']+)["\'],Password:["\']([^"\']+)["\']\}',loginjs,re.S)
+          if not m: raise SystemExit('Published anonymous visitor flow not found')
+          endpoint,user,pwd=m.groups()
+          lr=s.post(base+endpoint,data={'User':user,'Password':pwd},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
+          print('ANON_LOGIN',lr.status_code,lr.text[:200],flush=True)
+
+          field_ids=['9028002','9028004','9028014','9028019','9028020','9028021','9028022','9028023','9028024','9028025','9028027','9028028','9028030','9028031','9028032','9028033']
+          field_names=['债券代码','债券简称','票面利率','日期','交易所','前期期末结算价格','当期期初结算价格','当期最高结算价格','当期最低结算价格','当期期末结算价格','当期平均结算价格','当期期末应计利息','日到期收益率','债券成交量','资金成交金额','结算金额']
+          conditions=[
+            {'fieldId':'9028019','type':'DateRange','data':{'min':20010830,'max':20011231}},
+            {'relation':'and','rules':[{'fieldId':'9028002','type':'eq','data':'000896'}],'groups':[]}
+          ]
+          payload={'libraryId':'9012','subLibraryId':'901201','viewId':'9028','fields':field_ids,'conditions':conditions,'join':[]}
+          rr=s.get(base+'/product/preview',params={'data':json.dumps(payload,separators=(',',':'),ensure_ascii=False),'page':1,'rows':100},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
+          print('PREVIEW_HTTP',rr.status_code,rr.url,flush=True)
+          print('PREVIEW_BODY',rr.text[:15000].replace('\n',' '),flush=True)
+          open(out+'/raw_preview.json','w',encoding='utf-8').write(rr.text)
+          j=rr.json()
+          rows=j.get('rows') or []
+          print('TOTAL',j.get('total'),'NROWS',len(rows),'ERROR',j.get('error'),'SUCCESS',j.get('success'),flush=True)
+          if rows:
+              keys=list(rows[0].keys())
+              print('ROW_KEYS',keys,flush=True)
+              for idx,x in enumerate(rows[:5]): print('ROW',idx,json.dumps(x,ensure_ascii=False),flush=True)
+              # CCER datagrid returns selected columns in f_0... order.
+              mapped=[]
+              for x in rows:
+                  rec={}
+                  for k,name in zip(field_ids,field_names):
+                      rec[name]=x.get(k, x.get('f_'+str(field_ids.index(k)), x.get(k.lstrip('0'))))
+                  rec['_raw']=json.dumps(x,ensure_ascii=False,separators=(',',':'))
+                  mapped.append(rec)
+              with open(out+'/000896_20010830_20011231_ccer_preview.csv','w',newline='',encoding='utf-8-sig') as f:
+                  w=csv.DictWriter(f,fieldnames=field_names+['_raw']); w.writeheader(); w.writerows(mapped)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-ccer-000896-preview
+          path: ccer_000896_preview/

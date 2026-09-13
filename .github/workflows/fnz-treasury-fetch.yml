@@ -8,59 +8,65 @@ permissions:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Fetch 14 SSE Treasury daily quotes
+      - name: Fetch 14 SSE Treasury daily quotes from Sohu + Sina
         shell: bash
         run: |
-          python -m pip install -q requests pandas
+          python -m pip install -q requests pandas akshare
           python - <<'PY'
           import os,time,requests,pandas as pd
           from datetime import date,timedelta
+          import akshare as ak
           codes=['000696','000896','009704','009905','009908','010103','010107','010110','010112','010115','010203','010210','010213','010214']
-          start=date(2001,8,30); end=date(2002,12,13)
+          start=pd.Timestamp('2001-08-30'); end=pd.Timestamp('2002-12-13')
           os.makedirs('out',exist_ok=True)
           headers={'User-Agent':'Mozilla/5.0','Referer':'https://q.stock.sohu.com/'}
-          rows=[]; audit=[]
+          all_rows=[]; audit=[]
           for code in codes:
-              got={}; cur=start; errors=[]
-              while cur<=end:
-                  b=min(end,cur+timedelta(days=79))
+              sohu={}; cur=start.date(); errors=[]
+              while cur<=end.date():
+                  b=min(end.date(),cur+timedelta(days=79))
                   params={'code':f'cn_{code}','start':cur.strftime('%Y%m%d'),'end':b.strftime('%Y%m%d'),'stat':'1','order':'A','period':'d'}
-                  ok=False
                   for base in ['https://q.stock.sohu.com/hisHq','http://q.stock.sohu.com/hisHq']:
                       try:
-                          r=requests.get(base,params=params,headers=headers,timeout=25)
-                          r.raise_for_status(); j=r.json(); p=j[0] if isinstance(j,list) and j else j
+                          r=requests.get(base,params=params,headers=headers,timeout=25); r.raise_for_status(); j=r.json(); p=j[0] if isinstance(j,list) and j else j
                           for x in (p.get('hq') or []):
-                              if len(x)>=9:
-                                  got[x[0]]=x
-                          ok=True; break
-                      except Exception as e:
-                          errors.append(f'{cur}..{b} {base}: {e!r}')
-                  cur=b+timedelta(days=1); time.sleep(.15)
-              for d,x in sorted(got.items()):
-                  vals=list(x)+['']*(10-len(x))
-                  rows.append({'date':vals[0],'code':code,'open':vals[1],'close':vals[2],'change':vals[3],'change_pct':vals[4],'low':vals[5],'high':vals[6],'volume_hands':vals[7],'amount_10k_cny':vals[8],'turnover_pct':vals[9],'source':'Sohu hisHq'})
-              audit.append({'code':code,'rows':len(got),'first_date':min(got) if got else '', 'last_date':max(got) if got else '', 'errors':' | '.join(errors[-5:])})
-              print(code,len(got),audit[-1]['first_date'],audit[-1]['last_date'],flush=True)
-          df=pd.DataFrame(rows).sort_values(['date','code']) if rows else pd.DataFrame(columns=['date','code','open','close','change','change_pct','low','high','volume_hands','amount_10k_cny','turnover_pct','source'])
-          df.to_csv('out/sse_treasury_14bonds_raw_20010830_20021213.csv',index=False,encoding='utf-8-sig')
+                              if len(x)>=9: sohu[x[0]]=x
+                          break
+                      except Exception as e: errors.append(f'sohu {cur}..{b}: {e!r}')
+                  cur=b+timedelta(days=1); time.sleep(.1)
+              sina_df=pd.DataFrame(); sina_err=''
+              try:
+                  sina_df=ak.bond_zh_hs_daily(symbol=f'sh{code}').copy()
+                  if len(sina_df):
+                      sina_df['date']=pd.to_datetime(sina_df['date']); sina_df=sina_df[(sina_df['date']>=start)&(sina_df['date']<=end)]
+              except Exception as e: sina_err=repr(e)
+              dates=set(sohu)
+              if len(sina_df): dates |= set(sina_df['date'].dt.strftime('%Y-%m-%d'))
+              sina_map={r['date'].strftime('%Y-%m-%d'):r for _,r in sina_df.iterrows()} if len(sina_df) else {}
+              source_counts={'Sohu':0,'Sina':0}
+              for d in sorted(dates):
+                  if d in sohu:
+                      x=list(sohu[d])+['']*(10-len(sohu[d])); row={'date':d,'code':code,'open':x[1],'high':x[6],'low':x[5],'close':x[2],'volume':x[7],'amount_10k_cny':x[8],'source':'Sohu hisHq'}; source_counts['Sohu']+=1
+                  else:
+                      r=sina_map[d]; row={'date':d,'code':code,'open':r.get('open'),'high':r.get('high'),'low':r.get('low'),'close':r.get('close'),'volume':r.get('volume'),'amount_10k_cny':'','source':'Sina via AKShare'}; source_counts['Sina']+=1
+                  all_rows.append(row)
+              audit.append({'code':code,'rows':len(dates),'first_date':min(dates) if dates else '', 'last_date':max(dates) if dates else '', 'sohu_rows':source_counts['Sohu'],'sina_rows':source_counts['Sina'],'sina_error':sina_err,'recent_errors':' | '.join(errors[-3:])})
+              print('AUDIT',audit[-1],flush=True)
+          df=pd.DataFrame(all_rows).sort_values(['date','code'])
+          df.to_csv('out/sse_treasury_14bonds_merged_20010830_20021213.csv',index=False,encoding='utf-8-sig')
           pd.DataFrame(audit).to_csv('out/manifest.csv',index=False,encoding='utf-8-sig')
-          if len(df):
-              cs=df.groupby('date')['code'].agg(['nunique',lambda s:' '.join(sorted(set(s)))]).reset_index()
-              cs.columns=['date','bond_count','codes']; cs.to_csv('out/cross_section.csv',index=False,encoding='utf-8-sig')
-          else:
-              pd.DataFrame(columns=['date','bond_count','codes']).to_csv('out/cross_section.csv',index=False,encoding='utf-8-sig')
-              raise SystemExit('No rows returned')
+          cs=df.groupby('date')['code'].agg(['nunique',lambda s:' '.join(sorted(set(s)))]).reset_index(); cs.columns=['date','bond_count','codes']; cs.to_csv('out/cross_section.csv',index=False,encoding='utf-8-sig')
+          if not len(df): raise SystemExit('No rows returned')
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: fnz-treasury-14bonds-raw
+          name: fnz-treasury-14bonds-merged
           path: out/
           if-no-files-found: error
           retention-days: 7

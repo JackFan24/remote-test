@@ -1,0 +1,65 @@
+name: fnz-ccer-anon-probe
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-ccer-anon-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Inspect CCER login page and JS for anonymous/public endpoints
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os,re,json,html
+          from urllib.parse import urljoin
+          import requests
+
+          out='ccer_probe'; os.makedirs(out,exist_ok=True)
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Accept-Language':'zh-CN,zh;q=0.9,en;q=0.5'})
+          base='https://www.ccerdata.cn'
+          urls=[base+'/login?target=/database', base+'/database', base+'/home/operate']
+          all_scripts=[]
+          for i,u in enumerate(urls):
+              try:
+                  r=s.get(u,timeout=30,allow_redirects=True)
+                  print('GET',u,'->',r.status_code,r.url,'bytes',len(r.content),'cookies',s.cookies.get_dict(),flush=True)
+                  open(f'{out}/page_{i}.html','wb').write(r.content)
+                  txt=r.text
+                  for pat in [r'<form[^>]*>',r'<button[^>]*>.*?</button>',r'<input[^>]*>',r'<script[^>]+src=["\']([^"\']+)["\']']:
+                      ms=re.findall(pat,txt,re.I|re.S)
+                      if ms:
+                          print('PATTERN',pat,'COUNT',len(ms),flush=True)
+                          for x in ms[:40]: print('  ',re.sub(r'\s+',' ',x if isinstance(x,str) else str(x))[:500],flush=True)
+                  scripts=re.findall(r'<script[^>]+src=["\']([^"\']+)["\']',txt,re.I)
+                  all_scripts += [urljoin(r.url,x) for x in scripts]
+                  for kw in ['匿名','anonymous','login','database','preview','预览','query','ajax','/api/']:
+                      if kw.lower() in txt.lower(): print('HTML_HAS',kw,flush=True)
+              except Exception as e: print('ERR',u,repr(e),flush=True)
+
+          seen=[]
+          for j,u in enumerate(dict.fromkeys(all_scripts)):
+              try:
+                  r=s.get(u,timeout=30)
+                  t=r.text
+                  open(f'{out}/js_{j}.js','w',encoding='utf-8',errors='replace').write(t)
+                  hits=[]
+                  for line in t.splitlines():
+                      if re.search(r'匿名|anonymous|login|preview|预览|database|query|/api/|ajax',line,re.I):
+                          hits.append(line.strip())
+                  if hits:
+                      print('\nSCRIPT',j,u,'status',r.status_code,'bytes',len(r.content),'HITS',len(hits),flush=True)
+                      for h in hits[:120]: print(h[:1200],flush=True)
+              except Exception as e: print('JSERR',u,repr(e),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-ccer-anon-probe
+          path: ccer_probe/

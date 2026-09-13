@@ -1,0 +1,42 @@
+name: fnz-ccer-querycondition-js
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-ccer-querycondition-js.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch public query-condition JavaScript
+        shell: bash
+        run: |
+          mkdir -p ccer_querycondition
+          python - <<'PY'
+          import requests,re
+          base='https://www.ccerdata.cn'
+          page=requests.get(base+'/database/view?sid=901201&vid=9028',headers={'User-Agent':'Mozilla/5.0'},timeout=30).text
+          m=re.search(r'<script[^>]+src=["\']([^"\']*dap\.queryCondition\.js[^"\']*)["\']',page,re.I)
+          if not m: raise SystemExit('queryCondition script not found')
+          url=requests.compat.urljoin(base,m.group(1))
+          r=requests.get(url,headers={'User-Agent':'Mozilla/5.0'},timeout=30)
+          r.raise_for_status()
+          open('ccer_querycondition/dap.queryCondition.js','wb').write(r.content)
+          print('URL',url,'BYTES',len(r.content),flush=True)
+          text=r.text
+          for term in ['getResult','resultFields','groupRelation','fieldOperator','fieldValue']:
+              hits=list(re.finditer(term,text,re.I))
+              print('TERM',term,'HITS',len(hits),flush=True)
+              for h in hits[:8]:
+                  print(re.sub(r'\s+',' ',text[max(0,h.start()-500):min(len(text),h.end()+1200)])[:1800],flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-ccer-querycondition-js
+          path: ccer_querycondition/

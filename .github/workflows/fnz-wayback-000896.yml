@@ -1,0 +1,64 @@
+name: fnz-wayback-000896
+on:
+  push:
+    branches: [fnz-gap-audit-20260913]
+    paths: ['.github/workflows/fnz-wayback-000896.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  wb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Query Wayback snapshots for old 000896 histories
+        shell: bash
+        run: |
+          python -m pip install -q requests pandas akshare
+          python - <<'PY'
+          import os,json,re,requests,pandas as pd
+          os.makedirs('out',exist_ok=True)
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0'})
+          targets=[
+            'http://finance.sina.com.cn/realstock/company/sh000896/hisdata/klc_kl.js',
+            'https://finance.sina.com.cn/realstock/company/sh000896/hisdata/klc_kl.js',
+            'http://finance.sina.com.cn/realstock/company/sh000896/hisdata_klc2/klc_kl.js',
+            'https://finance.sina.com.cn/realstock/company/sh000896/hisdata_klc2/klc_kl.js',
+            'http://money.finance.sina.com.cn/bond/quotes/sh000896.html',
+            'http://q.stock.sohu.com/cn/000896/lshq.shtml',
+          ]
+          allcaps=[]
+          for ti,t in enumerate(targets):
+            try:
+              u='https://web.archive.org/cdx/search/cdx'
+              p={'url':t,'output':'json','filter':'statuscode:200','fl':'timestamp,original,statuscode,digest,length','collapse':'digest','from':'2001','to':'2020'}
+              r=s.get(u,params=p,timeout=30); open(f'out/cdx_{ti}.txt','w',encoding='utf-8').write(r.text)
+              j=r.json() if r.text.strip().startswith('[') else []
+              rows=j[1:] if len(j)>1 else []
+              for row in rows: allcaps.append({'target':t,'timestamp':row[0],'original':row[1],'status':row[2],'digest':row[3],'length':row[4]})
+            except Exception as e: allcaps.append({'target':t,'error':repr(e)})
+          caps=pd.DataFrame(allcaps); caps.to_csv('out/captures.csv',index=False,encoding='utf-8-sig')
+          print(caps.to_string(index=False))
+          # Download unique historical KLC captures. Try earliest, latest and up to 12 evenly spaced.
+          cand=caps[caps.get('original',pd.Series(dtype=str)).fillna('').str.contains('klc_kl.js',regex=False)].copy() if len(caps) else pd.DataFrame()
+          got=[]
+          if len(cand):
+            cand=cand.sort_values('timestamp')
+            idx=sorted(set([0,len(cand)-1]+[int(x) for x in pd.Series(range(min(12,len(cand))))*(len(cand)-1)/max(1,min(12,len(cand))-1)]))
+            sel=cand.iloc[idx]
+            for k,(_,row) in enumerate(sel.iterrows()):
+              snap=f"https://web.archive.org/web/{row['timestamp']}id_/{row['original']}"
+              try:
+                rr=s.get(snap,timeout=30); open(f'out/snapshot_{k}_{row["timestamp"]}.js','wb').write(rr.content)
+                got.append({'timestamp':row['timestamp'],'snapshot':snap,'status':rr.status_code,'bytes':len(rr.content),'head':rr.text[:80]})
+              except Exception as e: got.append({'timestamp':row['timestamp'],'snapshot':snap,'error':repr(e)})
+          pd.DataFrame(got).to_csv('out/downloaded.csv',index=False,encoding='utf-8-sig')
+          print(pd.DataFrame(got).to_string(index=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-wayback-000896-results
+          path: out/

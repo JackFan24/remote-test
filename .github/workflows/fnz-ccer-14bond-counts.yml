@@ -1,0 +1,50 @@
+name: fnz-ccer-14bond-counts
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-ccer-14bond-counts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Count CCER records for each paper bond using free fields only
+        shell: bash
+        run: |
+          mkdir -p ccer_14counts
+          python - <<'PY'
+          import json,re,csv,requests
+          base='https://www.ccerdata.cn'
+          codes=['000696','000896','009704','009905','009908','010103','010107','010110','010112','010115','010203','010210','010213','010214']
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Accept-Language':'zh-CN,zh;q=0.9'})
+          s.get(base+'/login?target=/database',timeout=30)
+          text=s.get(base+'/js/login.js',timeout=30).text
+          m=re.search(r'postnologin=function\(\).*?post\(["\'](/login/signin)["\'],\{User:["\']([^"\']+)["\'],Password:["\']([^"\']+)["\']\}',text,re.S)
+          endpoint,user,pwd=m.groups()
+          s.post(base+endpoint,data={'User':user,'Password':pwd},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
+          out=[]
+          for code in codes:
+              conditions=[
+                {'fieldId':'9028019','type':'DateRange','data':{'min':20010830,'max':20021213}},
+                {'relation':'and','rules':[{'fieldId':'9028002','type':'eq','data':code}],'groups':[]}
+              ]
+              payload={'libraryId':'9012','subLibraryId':'901201','viewId':'9028','fields':['9028002','9028004','9028019'],'conditions':conditions,'join':[]}
+              r=s.get(base+'/product/preview',params={'data':json.dumps(payload,separators=(',',':')),'page':1,'rows':1},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
+              try:j=r.json()
+              except:j={}
+              row=(j.get('rows') or [None])[0]
+              rec={'code':code,'http':r.status_code,'total':j.get('total'),'first_returned':json.dumps(row,ensure_ascii=False) if row else ''}
+              out.append(rec); print('COUNT',json.dumps(rec,ensure_ascii=False),flush=True)
+          with open('ccer_14counts/counts.csv','w',newline='',encoding='utf-8-sig') as f:
+              w=csv.DictWriter(f,fieldnames=['code','http','total','first_returned']);w.writeheader();w.writerows(out)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-ccer-14bond-counts
+          path: ccer_14counts/

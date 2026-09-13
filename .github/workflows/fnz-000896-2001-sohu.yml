@@ -1,0 +1,87 @@
+name: fnz-000896-2001-sohu
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-000896-2001-sohu.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-000896:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch 000896 2001 Sohu historical quotes
+        shell: bash
+        run: |
+          python - <<'PY'
+          import csv, json, os, re
+          from urllib.request import Request, urlopen
+          from urllib.parse import urlencode
+
+          outdir='fnz_000896_2001'
+          os.makedirs(outdir, exist_ok=True)
+          base='https://q.stock.sohu.com/hisHq'
+          params={
+              'code':'cn_000896',
+              'start':'20010830',
+              'end':'20011231',
+              'stat':'1',
+              'order':'A',
+              'period':'d',
+              'callback':'historySearchHandler',
+              'rt':'jsonp',
+          }
+          url=base+'?'+urlencode(params)
+          req=Request(url, headers={
+              'User-Agent':'Mozilla/5.0',
+              'Referer':'https://q.stock.sohu.com/cn/000896/lshq.shtml',
+              'Accept':'application/json,text/javascript,*/*;q=0.8',
+          })
+          with urlopen(req, timeout=30) as r:
+              raw=r.read()
+              print('HTTP', r.status, 'BYTES', len(raw), 'CONTENT_TYPE', r.headers.get('content-type'), flush=True)
+          text=raw.decode('utf-8','replace')
+          open(outdir+'/raw_response.txt','w',encoding='utf-8').write(text)
+          m=re.search(r'historySearchHandler\((.*)\)\s*;?\s*$', text, re.S)
+          payload=m.group(1) if m else text
+          obj=json.loads(payload)
+          blocks=obj if isinstance(obj,list) else [obj]
+          rows=[]
+          for b in blocks:
+              if not isinstance(b,dict):
+                  continue
+              for h in b.get('hq') or []:
+                  rows.append({
+                      'date':h[0] if len(h)>0 else '',
+                      'open':h[1] if len(h)>1 else '',
+                      'close':h[2] if len(h)>2 else '',
+                      'change':h[3] if len(h)>3 else '',
+                      'change_pct':h[4] if len(h)>4 else '',
+                      'low':h[5] if len(h)>5 else '',
+                      'high':h[6] if len(h)>6 else '',
+                      'volume':h[7] if len(h)>7 else '',
+                      'amount_10k':h[8] if len(h)>8 else '',
+                      'turnover_pct':h[9] if len(h)>9 else '',
+                  })
+          rows.sort(key=lambda x:x['date'])
+          fields=['date','open','close','change','change_pct','low','high','volume','amount_10k','turnover_pct']
+          with open(outdir+'/000896_20010830_20011231_sohu.csv','w',newline='',encoding='utf-8-sig') as f:
+              w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(rows)
+          print('ROWS',len(rows),flush=True)
+          if rows:
+              print('FIRST',json.dumps(rows[0],ensure_ascii=False),flush=True)
+              print('LAST',json.dumps(rows[-1],ensure_ascii=False),flush=True)
+              for r in rows:
+                  print('ROW',','.join(str(r[k]) for k in fields),flush=True)
+          else:
+              print('RAW_HEAD', text[:1000].replace('\n',' '), flush=True)
+          PY
+      - name: Upload raw and parsed 000896 data
+        uses: actions/upload-artifact@v4
+        with:
+          name: fnz-000896-2001-sohu
+          path: fnz_000896_2001/

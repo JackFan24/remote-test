@@ -1,0 +1,38 @@
+name: fnz-ccer-querycondition-js-v2
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-ccer-querycondition-js-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch public asset
+        shell: bash
+        run: |
+          mkdir -p ccer_querycondition
+          python - <<'PY'
+          import requests,re
+          url='https://www.ccerdata.cn/js/dap.queryCondition.js?v=OLG1TikiKCJHJmK2czjfD-doyRVaYHr4qH95RPDW7RE'
+          r=requests.get(url,headers={'User-Agent':'Mozilla/5.0'},timeout=30)
+          r.raise_for_status()
+          open('ccer_querycondition/dap.queryCondition.js','wb').write(r.content)
+          text=r.text
+          print('HTTP',r.status_code,'BYTES',len(r.content),flush=True)
+          for term in ['getResult','resultFields','groupRelation','fieldOperator','fieldValue','Like','Equal']:
+              hits=list(re.finditer(term,text,re.I))
+              print('TERM',term,'HITS',len(hits),flush=True)
+              for h in hits[:10]:
+                  print(re.sub(r'\s+',' ',text[max(0,h.start()-600):min(len(text),h.end()+1500)])[:2200],flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-ccer-querycondition-js-v2
+          path: ccer_querycondition/

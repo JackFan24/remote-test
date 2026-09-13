@@ -1,0 +1,52 @@
+name: fnz-sse-api-fast
+on:
+  push:
+    branches: [fnz-gap-audit-20260913]
+    paths: ['.github/workflows/fnz-sse-api-fast.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Inspect SSE net/full historical page
+        shell: bash
+        run: |
+          python -m pip install -q requests beautifulsoup4
+          python - <<'PY'
+          import os,re,json,requests
+          from bs4 import BeautifulSoup
+          from urllib.parse import urljoin
+          os.makedirs('out',exist_ok=True)
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://bond.sse.com.cn/'})
+          u='https://bond.sse.com.cn/data/statistics/Statistics/netfull/index_his.shtml'
+          r=s.get(u,timeout=15); open('out/page.html','w',encoding='utf-8').write(r.text)
+          soup=BeautifulSoup(r.text,'html.parser')
+          scripts=[]
+          inline=[]
+          for tag in soup.find_all('script'):
+              if tag.get('src'): scripts.append(urljoin(u,tag.get('src')))
+              elif tag.text.strip(): inline.append(tag.text)
+          open('out/scripts.txt','w',encoding='utf-8').write('\n'.join(scripts))
+          open('out/inline.txt','w',encoding='utf-8').write('\n\n'.join(inline))
+          hits=[]
+          for i,src in enumerate(scripts):
+              try:
+                  rr=s.get(src,timeout=15); txt=rr.text
+                  if re.search(r'netfull|ajax|query|json|Statistics|fullprice|clean',txt,re.I):
+                      open(f'out/hit_script_{i}.js','w',encoding='utf-8').write(txt)
+                      for m in re.finditer(r'.{0,250}(?:netfull|ajax|query|json|Statistics|fullprice|clean).{0,350}',txt,re.I|re.S):
+                          hits.append('SRC '+src+'\n'+m.group(0).replace('\n',' ')+'\n')
+              except Exception as e: hits.append('ERR '+src+' '+repr(e))
+          open('out/hits.txt','w',encoding='utf-8').write('\n'.join(hits))
+          print('page',r.status_code,len(r.text),'scripts',len(scripts),'hits',len(hits))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-sse-api-fast-results
+          path: out/

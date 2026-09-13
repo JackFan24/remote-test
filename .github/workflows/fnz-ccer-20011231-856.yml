@@ -1,0 +1,38 @@
+name: fnz-ccer-20011231-856
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-ccer-20011231-856.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Query public preview endpoint
+        shell: bash
+        run: |
+          mkdir -p ccer_856
+          python - <<'PY'
+          import json,requests
+          base='https://www.ccerdata.cn'
+          fields=['9028001','9028002','9028003','9028004','9028006','9028014','9028019','9028020','9028025','9028028','9028030','9028031','9028032','9028033']
+          conditions=[
+            {'fieldId':'9028019','type':'DateRange','data':{'min':20011231,'max':20011231}},
+            {'relation':'and','rules':[{'fieldId':'9028014','type':'eq','data':'8.56'}],'groups':[]}
+          ]
+          payload={'libraryId':'9012','subLibraryId':'901201','viewId':'9028','fields':fields,'conditions':conditions,'join':[]}
+          r=requests.get(base+'/product/preview',params={'data':json.dumps(payload,separators=(',',':')),'page':1,'rows':20},headers={'User-Agent':'Mozilla/5.0','X-Requested-With':'XMLHttpRequest'},timeout=30)
+          print('HTTP',r.status_code,'URL',r.url,flush=True)
+          print('BODY',r.text[:12000].replace('\n',' '),flush=True)
+          open('ccer_856/raw.json','w',encoding='utf-8').write(r.text)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-ccer-20011231-856
+          path: ccer_856/

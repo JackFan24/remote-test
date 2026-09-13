@@ -1,0 +1,27 @@
+name: fnz-sse-quote-page
+on:
+  push:
+    branches: [fnz-gap-audit-20260913]
+    paths: ['.github/workflows/fnz-sse-quote-page.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  page:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Inspect SSE bond quote page
+        shell: bash
+        run: |
+          set -e
+          mkdir -p out
+          curl -L --max-time 20 -A 'Mozilla/5.0' 'https://bond.sse.com.cn/data/quote/indexb.shtml?BONDCODE=000896' -o out/page.html || true
+          grep -Eo '<script[^>]+src="[^"]+"' out/page.html | sed -E 's/.*src="([^"]+)"/\1/' > out/scripts.txt || true
+          grep -Ein 'commonQuery|sqlId|Ajax|query.sse|BONDCODE|KLINE|kline|history|his|quote' out/page.html > out/hits.txt || true
+          wc -c out/page.html
+          cat out/hits.txt | head -200
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-sse-quote-page-results
+          path: out/

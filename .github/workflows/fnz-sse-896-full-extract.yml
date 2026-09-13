@@ -1,0 +1,54 @@
+name: fnz-sse-896-full-extract
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-sse-896-full-extract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Fetch SSE full result and extract product 896
+        shell: bash
+        run: |
+          mkdir -p out
+          python - <<'PY'
+          import csv, json, requests
+          from datetime import datetime
+          url='https://query.sse.com.cn/commonQuery.do'
+          params={'sqlId':'COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L','isPagination':'false'}
+          headers={'User-Agent':'Mozilla/5.0','Referer':'https://www.sse.com.cn/','Accept':'application/json,text/javascript,*/*;q=0.8'}
+          r=requests.get(url,params=params,headers=headers,timeout=90)
+          r.raise_for_status()
+          j=r.json(); rows=j.get('result') or []
+          print('ALL_ROWS',len(rows),flush=True)
+          def normprod(x): return str(x or '').strip().lstrip('0')
+          target=[x for x in rows if normprod(x.get('PRODUCT'))=='896']
+          target.sort(key=lambda x:str(x.get('TXDATE','')))
+          print('TARGET_ROWS',len(target),flush=True)
+          print('FIRST',json.dumps(target[0],ensure_ascii=False) if target else '',flush=True)
+          print('LAST',json.dumps(target[-1],ensure_ascii=False) if target else '',flush=True)
+          y2001=[x for x in target if str(x.get('TXDATE','')).startswith('2001-')]
+          window=[x for x in target if '2001-08-30' <= str(x.get('TXDATE',''))[:10] <= '2001-12-31']
+          print('Y2001_ROWS',len(y2001),flush=True)
+          print('WINDOW_ROWS',len(window),flush=True)
+          if y2001:
+              print('Y2001_FIRST',json.dumps(y2001[0],ensure_ascii=False),flush=True)
+              print('Y2001_LAST',json.dumps(y2001[-1],ensure_ascii=False),flush=True)
+          fields=['PRODUCT','PRODUCTNAME','TXDATE','CLOSEPRICE','INTEREST','TOTAL_PRICE','ANNPROFIT','NUM']
+          for name,data in [('896_all',target),('896_2001',y2001),('896_20010830_20011231',window)]:
+              with open(f'out/{name}.csv','w',newline='',encoding='utf-8-sig') as f:
+                  w=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore'); w.writeheader(); w.writerows(data)
+          with open('out/raw_metadata.json','w',encoding='utf-8') as f:
+              json.dump({'all_rows':len(rows),'target_rows':len(target),'y2001_rows':len(y2001),'window_rows':len(window)},f,ensure_ascii=False,indent=2)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-sse-896-full-extract
+          path: out/

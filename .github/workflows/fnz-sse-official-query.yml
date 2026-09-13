@@ -1,0 +1,57 @@
+name: fnz-sse-official-query
+on:
+  push:
+    branches: [fnz-gap-audit-20260913]
+    paths: ['.github/workflows/fnz-sse-official-query.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  query:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Query SSE official net/full endpoint
+        shell: bash
+        run: |
+          python -m pip install -q requests pandas
+          python - <<'PY'
+          import os,json,requests,pandas as pd
+          os.makedirs('out',exist_ok=True)
+          s=requests.Session(); s.headers.update({
+            'User-Agent':'Mozilla/5.0',
+            'Referer':'https://bond.sse.com.cn/data/statistics/Statistics/netfull/index_his.shtml',
+            'Accept':'*/*'
+          })
+          url='https://query.sse.com.cn/commonQuery.do'
+          sql='COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L'
+          dates=['2001-08-30','2001-09-03','2001-11-01','2001-12-31','2002-01-04','2002-02-28','2002-03-25']
+          summary=[]; allrows=[]
+          for d in dates:
+            p={'jsonCallBack':'jsonpCallback123456','isPagination':'true','pageHelp.pageSize':'500','pageHelp.beginPage':'1','pageHelp.endPage':'1','pageHelp.cacheSize':'1','sqlId':sql,'TRADE_DATE':d,'BOND_TYPE':'记账式国债'}
+            try:
+              r=s.get(url,params=p,timeout=20)
+              open(f'out/raw_{d}.txt','w',encoding='utf-8').write(r.text)
+              txt=r.text.strip();
+              if txt.startswith('jsonpCallback'):
+                txt=txt[txt.find('(')+1:txt.rfind(')')]
+              j=json.loads(txt); rows=j.get('result') or []
+              summary.append({'date':d,'status':r.status_code,'rows':len(rows),'has_000896':any(str(x.get('PRODUCT','')).zfill(6)=='000896' for x in rows),'url':r.url})
+              for x in rows:
+                x=dict(x); x['_query_date']=d; allrows.append(x)
+            except Exception as e:
+              summary.append({'date':d,'status':'ERR','rows':0,'has_000896':False,'url':'','error':repr(e)})
+          pd.DataFrame(summary).to_csv('out/summary.csv',index=False,encoding='utf-8-sig')
+          pd.DataFrame(allrows).to_csv('out/allrows.csv',index=False,encoding='utf-8-sig')
+          if allrows:
+            df=pd.DataFrame(allrows); code=df.get('PRODUCT',pd.Series(dtype=str)).astype(str).str.zfill(6)
+            df[code.eq('000896')].to_csv('out/000896_hits.csv',index=False,encoding='utf-8-sig')
+          print(pd.DataFrame(summary).to_string(index=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-sse-official-query-results
+          path: out/

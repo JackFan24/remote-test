@@ -1,0 +1,45 @@
+name: fnz-ccer-20011231-856-anon
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-ccer-20011231-856-anon.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Query one CCER anonymous preview slice
+        shell: bash
+        run: |
+          mkdir -p ccer_856_anon
+          python - <<'PY'
+          import json,re,requests
+          base='https://www.ccerdata.cn'
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Accept-Language':'zh-CN,zh;q=0.9'})
+          s.get(base+'/login?target=/database',timeout=30)
+          text=s.get(base+'/js/login.js',timeout=30).text
+          m=re.search(r'postnologin=function\(\).*?post\(["\'](/login/signin)["\'],\{User:["\']([^"\']+)["\'],Password:["\']([^"\']+)["\']\}',text,re.S)
+          if not m: raise SystemExit('anonymous flow unavailable')
+          endpoint,user,pwd=m.groups()
+          a=s.post(base+endpoint,data={'User':user,'Password':pwd},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
+          print('ANON',a.status_code,a.text[:200],flush=True)
+          fields=['9028001','9028002','9028003','9028004','9028006','9028014','9028019','9028020','9028025','9028028','9028030','9028031','9028032','9028033']
+          conditions=[
+            {'fieldId':'9028019','type':'DateRange','data':{'min':20011231,'max':20011231}},
+            {'relation':'and','rules':[{'fieldId':'9028014','type':'eq','data':'8.56'}],'groups':[]}
+          ]
+          payload={'libraryId':'9012','subLibraryId':'901201','viewId':'9028','fields':fields,'conditions':conditions,'join':[]}
+          r=s.get(base+'/product/preview',params={'data':json.dumps(payload,separators=(',',':')),'page':1,'rows':20},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
+          print('HTTP',r.status_code,'BODY',r.text[:12000].replace('\n',' '),flush=True)
+          open('ccer_856_anon/raw.json','w',encoding='utf-8').write(r.text)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-ccer-20011231-856-anon
+          path: ccer_856_anon/

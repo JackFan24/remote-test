@@ -1,0 +1,58 @@
+name: fnz-sse-000896-param-probe
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-sse-000896-param-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Probe known SSE sqlId against known official anchor
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,requests
+          from urllib.parse import urlencode
+          base='https://query.sse.com.cn/commonQuery.do'
+          sql='COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L'
+          headers={
+            'User-Agent':'Mozilla/5.0',
+            'Referer':'https://www.sse.com.cn/',
+            'Accept':'application/json,text/javascript,*/*;q=0.8',
+          }
+          tests=[
+            ('minimal', {'sqlId':sql,'isPagination':'false'}),
+            ('product_txdate', {'sqlId':sql,'isPagination':'false','PRODUCT':'896','TXDATE':'2001-12-31'}),
+            ('product_txdate_compact', {'sqlId':sql,'isPagination':'false','PRODUCT':'896','TXDATE':'20011231'}),
+            ('product_date', {'sqlId':sql,'isPagination':'false','PRODUCT':'896','DATE':'2001-12-31'}),
+            ('product_querydate', {'sqlId':sql,'isPagination':'false','PRODUCT':'896','queryDate':'2001-12-31'}),
+            ('product_beg_end', {'sqlId':sql,'isPagination':'false','PRODUCT':'896','beginDate':'2001-12-31','endDate':'2001-12-31'}),
+            ('code_txdate', {'sqlId':sql,'isPagination':'false','BOND_CODE':'896','TXDATE':'2001-12-31'}),
+            ('security_txdate', {'sqlId':sql,'isPagination':'false','SECURITY_CODE':'896','TXDATE':'2001-12-31'}),
+          ]
+          s=requests.Session(); s.headers.update(headers)
+          for name,p in tests:
+            try:
+              r=s.get(base,params=p,timeout=30)
+              txt=r.text
+              print('\nTEST',name,'HTTP',r.status_code,'URL',r.url,'BYTES',len(r.content),flush=True)
+              print('HEAD',txt[:5000].replace('\n',' '),flush=True)
+              try:
+                j=r.json()
+                print('JSON_TYPE',type(j).__name__,flush=True)
+                if isinstance(j,dict):
+                  print('KEYS',list(j.keys()),flush=True)
+                  # Scan recursively for anchor values or 96 bond name.
+                  blob=json.dumps(j,ensure_ascii=False)
+                  for needle in ['112.1','113.53','96国债','"PRODUCT":"896"','"PRODUCT":896']:
+                    if needle in blob: print('ANCHOR_HIT',needle,flush=True)
+              except Exception as e: print('JSON_ERR',repr(e),flush=True)
+            except Exception as e: print('ERR',name,repr(e),flush=True)
+          PY

@@ -1,0 +1,39 @@
+name: fnz-ccer-freefield-selfcheck
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-ccer-freefield-selfcheck.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check old and latest dates with free fields only
+        shell: bash
+        run: |
+          mkdir -p ccer_freecheck
+          python - <<'PY'
+          import json,re,requests
+          base='https://www.ccerdata.cn'
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Accept-Language':'zh-CN,zh;q=0.9'})
+          s.get(base+'/login?target=/database',timeout=30)
+          text=s.get(base+'/js/login.js',timeout=30).text
+          m=re.search(r'postnologin=function\(\).*?post\(["\'](/login/signin)["\'],\{User:["\']([^"\']+)["\'],Password:["\']([^"\']+)["\']\}',text,re.S)
+          endpoint,user,pwd=m.groups()
+          s.post(base+endpoint,data={'User':user,'Password':pwd},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
+          for dt in [20011231,20241101]:
+              payload={'libraryId':'9012','subLibraryId':'901201','viewId':'9028','fields':['9028002','9028004','9028019'],'conditions':[{'fieldId':'9028019','type':'DateRange','data':{'min':dt,'max':dt}}],'join':[]}
+              r=s.get(base+'/product/preview',params={'data':json.dumps(payload,separators=(',',':')),'page':1,'rows':100},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
+              print('DATE',dt,'HTTP',r.status_code,'BODY',r.text[:15000].replace('\n',' '),flush=True)
+              open(f'ccer_freecheck/{dt}.json','w',encoding='utf-8').write(r.text)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-ccer-freefield-selfcheck
+          path: ccer_freecheck/

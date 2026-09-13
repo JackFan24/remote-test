@@ -1,0 +1,56 @@
+name: fnz-szproxy-audit
+on:
+  push:
+    branches: [fnz-gap-audit-20260913]
+    paths: ['.github/workflows/fnz-szproxy-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Fetch Shenzhen cross-listed 96 Treasury 8
+        shell: bash
+        run: |
+          python -m pip install -q akshare pandas requests
+          python - <<'PY'
+          import os, pandas as pd, requests, json
+          os.makedirs('out',exist_ok=True)
+          rec=[]
+          try:
+              import akshare as ak
+              d=ak.bond_zh_hs_daily(symbol='sz101968')
+              d['date']=pd.to_datetime(d['date'])
+              d.to_csv('out/sz101968_akshare_all.csv',index=False,encoding='utf-8-sig')
+              x=d[(d['date']>='2001-08-30')&(d['date']<='2001-12-31')]
+              x.to_csv('out/sz101968_20010830_20011231.csv',index=False,encoding='utf-8-sig')
+              rec.append({'source':'akshare_sina','rows_gap':len(x),'all_rows':len(d),'first':str(d['date'].min().date()) if len(d) else '', 'last':str(d['date'].max().date()) if len(d) else ''})
+          except Exception as e: rec.append({'source':'akshare_sina','error':repr(e)})
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0'})
+          # Eastmoney: Shenzhen market id 0
+          try:
+              u='https://push2his.eastmoney.com/api/qt/stock/kline/get'; p={'secid':'0.101968','klt':'101','fqt':'0','beg':'20010830','end':'20011231','fields1':'f1,f2,f3,f4,f5,f6','fields2':'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61'}
+              r=s.get(u,params=p,timeout=30); open('out/eastmoney_sz101968_raw.txt','w').write(r.text); j=r.json(); kl=(j.get('data') or {}).get('klines') or []; arr=[z.split(',') for z in kl]
+              if arr: pd.DataFrame(arr).to_csv('out/eastmoney_sz101968.csv',index=False,header=False,encoding='utf-8-sig')
+              rec.append({'source':'eastmoney','rows_gap':len(arr),'first':arr[0][0] if arr else '','last':arr[-1][0] if arr else '', 'status':r.status_code})
+          except Exception as e: rec.append({'source':'eastmoney','error':repr(e)})
+          # Tencent
+          try:
+              u='https://web.ifzq.gtimg.cn/appstock/app/fqkline/get'; p={'param':'sz101968,day,2001-08-30,2001-12-31,640'}
+              r=s.get(u,params=p,timeout=30); open('out/tencent_sz101968_raw.txt','w').write(r.text); j=r.json(); z=(j.get('data') or {}).get('sz101968') or {}; arr=z.get('day') or []
+              if arr: pd.DataFrame(arr).to_csv('out/tencent_sz101968.csv',index=False,header=False,encoding='utf-8-sig')
+              rec.append({'source':'tencent','rows_gap':len(arr),'first':arr[0][0] if arr else '','last':arr[-1][0] if arr else '', 'status':r.status_code})
+          except Exception as e: rec.append({'source':'tencent','error':repr(e)})
+          pd.DataFrame(rec).to_csv('out/summary.csv',index=False,encoding='utf-8-sig')
+          print(pd.DataFrame(rec).to_string(index=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fnz-szproxy-audit-results
+          path: out/

@@ -12,13 +12,13 @@ permissions:
 jobs:
   extract:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Identify legacy date bind params
+      - name: Extract official 000896 daily rows
         shell: bash
         run: |
           python - <<'PY'
-          import json,re,requests
+          import csv,datetime as dt,json,os,re,requests,time
           base='https://query.sse.com.cn/commonQuery.do'
           sql='COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L'
           s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://bond.sse.com.cn/data/statistics/Statistics/netfull/index_his.shtml','Accept':'application/json,text/javascript,*/*;q=0.8'})
@@ -29,22 +29,50 @@ jobs:
             if m:
               try:return json.loads(m.group(1))
               except:return None
-          tests=[
-            ('START_END_hyphen', {'START_DATE':'2001-12-31','END_DATE':'2001-12-31'}),
-            ('START_END_compact', {'START_DATE':'20011231','END_DATE':'20011231'}),
-            ('BEGIN_END_hyphen', {'BEGIN_DATE':'2001-12-31','END_DATE':'2001-12-31'}),
-            ('TRADE_DATE_hyphen', {'TRADE_DATE':'2001-12-31'}),
-            ('DATE_hyphen', {'DATE':'2001-12-31'}),
-            ('TXDATE_compact', {'TXDATE':'20011231'}),
-          ]
-          for name,x in tests:
-            p={'isPagination':'true','pageHelp.pageSize':'100','sqlId':sql,**x}
-            r=s.get(base,params=p,timeout=30); j=parse(r.text)
-            rows=[]
-            if isinstance(j,dict): rows=j.get('result') or ((j.get('pageHelp') or {}).get('data')) or []
-            dates=sorted({str(z.get('TXDATE') or z.get('TRADE_DATE') or '') for z in rows})
-            hits=[z for z in rows if any(q in json.dumps(z,ensure_ascii=False) for q in ['000896','96国债','国债⑻','国债(8)','国债（8）'])]
-            print('\nTEST',name,'HTTP',r.status_code,'ROWS',len(rows),'DATES',dates[:3],dates[-3:],flush=True)
-            print('HITS',json.dumps(hits,ensure_ascii=False)[:5000],flush=True)
-            if rows: print('FIRST',json.dumps(rows[0],ensure_ascii=False)[:1500],flush=True)
+            return None
+          start=dt.date(2001,8,30); end=dt.date(2001,12,31)
+          out=[]; queried=0; exact_date_rows=0
+          d=start
+          while d<=end:
+            ds=d.isoformat()
+            p={'isPagination':'true','pageHelp.pageSize':'100','sqlId':sql,'TRADE_DATE':ds}
+            try:
+              r=s.get(base,params=p,timeout=25); j=parse(r.text); queried+=1
+              rows=[]
+              if isinstance(j,dict): rows=j.get('result') or ((j.get('pageHelp') or {}).get('data')) or []
+              exact=[z for z in rows if str(z.get('TXDATE','')).startswith(ds)]
+              if exact: exact_date_rows+=1
+              for z in exact:
+                if str(z.get('PRODUCT','')).zfill(6)=='000896':
+                  rec={
+                    'date':ds,
+                    'product':str(z.get('PRODUCT','')),
+                    'product_name':str(z.get('PRODUCTNAME','')),
+                    'close_price':str(z.get('CLOSEPRICE','')),
+                    'interest':str(z.get('INTEREST','')),
+                    'total_price':str(z.get('TOTAL_PRICE','')),
+                    'ann_profit':str(z.get('ANNPROFIT','')),
+                    'source_txdate':str(z.get('TXDATE','')),
+                  }
+                  out.append(rec)
+                  print('ROW|'+'|'.join(rec[k] for k in ['date','product','product_name','close_price','interest','total_price','ann_profit','source_txdate']),flush=True)
+            except Exception as e:
+              print('ERR',ds,repr(e),flush=True)
+            d += dt.timedelta(days=1)
+            time.sleep(0.04)
+          os.makedirs('out',exist_ok=True)
+          fields=['date','product','product_name','close_price','interest','total_price','ann_profit','source_txdate']
+          with open('out/000896_SSE_official_20010830_20011231.csv','w',newline='',encoding='utf-8-sig') as f:
+            w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(out)
+          print('SUMMARY queried_calendar_days=',queried,'dates_with_any_exact_rows=',exact_date_rows,'000896_rows=',len(out),flush=True)
+          if out:
+            print('FIRST',json.dumps(out[0],ensure_ascii=False),flush=True)
+            print('LAST',json.dumps(out[-1],ensure_ascii=False),flush=True)
+            anchor=[x for x in out if x['date']=='2001-12-31']
+            print('ANCHOR',json.dumps(anchor,ensure_ascii=False),flush=True)
           PY
+      - name: Upload official SSE extract
+        uses: actions/upload-artifact@v4
+        with:
+          name: fnz-000896-sse-official-2001
+          path: out/000896_SSE_official_20010830_20011231.csv

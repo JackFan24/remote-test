@@ -14,36 +14,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - name: Inspect SSE net-full page scripts and query construction
+      - name: Extract exact SSE JJYQJ frontend query construction
         shell: bash
         run: |
           python - <<'PY'
-          import re, requests, urllib.parse
-          pages=[
-            'https://bond.sse.com.cn/data/statistics/Statistics/netfull/',
-            'https://bond.sse.com.cn/data/statistics/Statistics/netfull/index_his.shtml',
-            'https://www.sse.com.cn/market/bonddata/netfull/index_his.shtml',
+          import re, requests
+          urls=[
+            'https://bond.sse.com.cn/xhtml/js/js_statistical.js',
+            'https://bond.sse.com.cn/xhtml/js/area/statistics/js_statistical.js?v=20170516',
           ]
-          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://bond.sse.com.cn/'})
-          for page in pages:
-            print('\nPAGE',page,flush=True)
-            r=s.get(page,timeout=30); print('HTTP',r.status_code,'BYTES',len(r.content),'FINAL',r.url,flush=True)
-            html=r.text
-            for line in html.splitlines():
-              if any(k in line for k in ['script','sqlId','commonQuery','queryDate','securityCode','netfull','SSEBOND']):
-                print('HTML',line[:3000],flush=True)
-            srcs=re.findall(r'<script[^>]+src=["\']([^"\']+)',html,re.I)
-            for src in srcs:
-              u=urllib.parse.urljoin(r.url,src)
-              try:
-                js=s.get(u,timeout=30).text
-              except Exception as e:
-                print('JSERR',u,e,flush=True); continue
-              hit=any(k in js for k in ['COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L','commonQuery.do','queryDate','securityCode'])
-              if hit:
-                print('\nJS_HIT',u,'LEN',len(js),flush=True)
-                for pat in ['COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L','commonQuery.do','queryDate','securityCode','sqlId']:
-                  for m in list(re.finditer(re.escape(pat),js,re.I))[:10]:
-                    a=max(0,m.start()-800); b=min(len(js),m.end()+1600)
-                    print('CTX',pat,js[a:b].replace('\n',' ')[:3500],flush=True)
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://bond.sse.com.cn/data/statistics/Statistics/netfull/'})
+          for u in urls:
+            try:
+              r=s.get(u,timeout=30)
+              print('\nURL',u,'HTTP',r.status_code,'LEN',len(r.text),'FINAL',r.url,flush=True)
+              js=r.text
+            except Exception as e:
+              print('ERR',u,repr(e),flush=True); continue
+            for pat in ['js_insertJjyqj','insertJjyqj','COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L','JJYQJ','keywordsearch','tDate','commonQuery.do']:
+              ms=list(re.finditer(re.escape(pat),js,re.I))
+              print('PAT',pat,'COUNT',len(ms),flush=True)
+              for i,m in enumerate(ms[:20]):
+                a=max(0,m.start()-1800); b=min(len(js),m.end()+4000)
+                print(f'--- {pat} #{i+1} ---',flush=True)
+                print(js[a:b],flush=True)
           PY

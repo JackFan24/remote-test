@@ -12,47 +12,44 @@ permissions:
 jobs:
   search:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 8
     steps:
-      - name: Search CCER catalog using its published anonymous visitor flow
+      - name: Enumerate treasury product views under 901201
         shell: bash
         run: |
           python - <<'PY'
-          import os,json,re,requests
-          out='ccer_treasury_search'; os.makedirs(out,exist_ok=True)
-          base='https://www.ccerdata.cn'
+          import json,re,requests,time
+          base='https://www.ccerdata.cn'; lid='9012'; sid='901201'
           s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Accept-Language':'zh-CN,zh;q=0.9'})
-          login=s.get(base+'/login?target=/database',timeout=30)
+          s.get(base+'/login?target=/database',timeout=30)
           js=s.get(base+'/js/login.js',timeout=30).text
           m=re.search(r'postnologin=function\(\).*?post\(["\'](/login/signin)["\'],\{User:["\']([^"\']+)["\'],Password:["\']([^"\']+)["\']\}',js,re.S)
-          if not m: raise SystemExit('Could not locate CCER published anonymous login flow')
+          if not m: raise SystemExit('anonymous flow not found')
           endpoint,user,pwd=m.groups()
           r=s.post(base+endpoint,data={'User':user,'Password':pwd},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
-          print('ANON_LOGIN',r.status_code,r.text[:300],flush=True)
-          terms=['国债现货交易','国债现货','国债交易','国债','96国债(8)','96国债','000896','债券现货']
-          allrows=[]
-          for idx,q in enumerate(terms):
+          print('ANON',r.status_code,r.text[:100],flush=True)
+          print('CATALOG SEARCH',flush=True)
+          for q in ['国债现货交易数据库','国债现货','国债交易']:
               rr=s.get(base+'/api/product/getsearch',params={'text':q,'page':1},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
-              print('\nQUERY',q,'HTTP',rr.status_code,'URL',rr.url,flush=True)
-              try: j=rr.json()
+              print('Q',q,'HTTP',rr.status_code,'BODY',rr.text[:8000].replace('\n',' '),flush=True)
+          print('\nVIEW ENUM',flush=True)
+          found=[]
+          for vid in range(9000,9061):
+              try:
+                  rr=s.get(base+'/product/getView',params={'id':vid,'sid':sid,'lid':lid},headers={'X-Requested-With':'XMLHttpRequest'},timeout=15)
+                  if rr.status_code!=200: continue
+                  try:v=rr.json()
+                  except: continue
+                  if not isinstance(v,dict) or not v: continue
+                  full=str(v.get('fullName') or v.get('name') or '')
+                  vsid=str(v.get('subLibraryId') or v.get('subLibraryID') or '')
+                  fields=v.get('groupFields') or {}
+                  nfields=sum(len(x) for x in fields.values() if isinstance(x,list)) if isinstance(fields,dict) else 0
+                  if full or vsid or nfields:
+                      rec={'vid':vid,'fullName':full,'subLibraryId':vsid,'startTime':v.get('startTime'),'endTime':v.get('endTime'),'total':v.get('total'),'authType':v.get('authType'),'previewDisabled':v.get('previewDisabled'),'groups':list(fields.keys()) if isinstance(fields,dict) else None,'nfields':nfields}
+                      found.append(rec); print('VIEW',json.dumps(rec,ensure_ascii=False),flush=True)
               except Exception as e:
-                  print('BODY',rr.text[:1200].replace('\n',' '),'JSONERR',repr(e),flush=True); continue
-              open(f'{out}/q{idx}.json','w',encoding='utf-8').write(json.dumps(j,ensure_ascii=False,indent=2))
-              data=j.get('data') or j.get('Data') or []
-              print('TOTAL',j.get('total',j.get('Total')),'ROWS',len(data),flush=True)
-              for x in data:
-                  allrows.append({'query':q,**x})
-                  print('RESULT',json.dumps(x,ensure_ascii=False),flush=True)
-          open(out+'/all_results.json','w',encoding='utf-8').write(json.dumps(allrows,ensure_ascii=False,indent=2))
-          print('\nUNIQUE_RESULTS',flush=True)
-          seen=set()
-          for x in allrows:
-              k=(x.get('subLibraryId'),x.get('viewId'),x.get('tableId'),x.get('fieldId'))
-              if k in seen: continue
-              seen.add(k)
-              print(json.dumps(x,ensure_ascii=False),flush=True)
+                  pass
+              time.sleep(0.03)
+          print('FOUND_N',len(found),flush=True)
           PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: fnz-ccer-treasury-search
-          path: ccer_treasury_search/

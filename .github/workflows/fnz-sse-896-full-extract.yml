@@ -14,30 +14,35 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Test historical coverage boundary
+      - name: Probe NetEase historical CSV for old treasury bonds
         shell: bash
         run: |
           python - <<'PY'
-          import json,re,requests
-          base='https://query.sse.com.cn/commonQuery.do'
-          sql='COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L'
-          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://bond.sse.com.cn/data/statistics/Statistics/netfull/index_his.shtml','Accept':'application/json,text/javascript,*/*;q=0.8'})
-          def parse(t):
-            try:return json.loads(t)
-            except: pass
-            m=re.search(r'^[^(]*\((.*)\)\s*;?\s*$',t,re.S)
-            if m:
-              try:return json.loads(m.group(1))
-              except:return None
-          dates=['2001-08-30','2001-09-03','2001-11-30','2001-12-28','2001-12-31','2002-01-04','2002-01-07','2002-01-31','2002-02-28','2002-03-01','2002-12-13']
-          for ds in dates:
-            p={'isPagination':'true','pageHelp.pageSize':'100','sqlId':sql,'TRADE_DATE':ds}
-            r=s.get(base,params=p,timeout=30); j=parse(r.text)
-            rows=[]
-            if isinstance(j,dict): rows=j.get('result') or ((j.get('pageHelp') or {}).get('data')) or []
-            exact=[z for z in rows if str(z.get('TXDATE','')).startswith(ds)]
-            hit=[z for z in exact if str(z.get('PRODUCT','')).zfill(6)=='000896']
-            print('DATE',ds,'RAW_ROWS',len(rows),'EXACT_ROWS',len(exact),'000896',len(hit),flush=True)
-            if hit: print('HIT',json.dumps(hit,ensure_ascii=False),flush=True)
-            if exact: print('FIRST_EXACT',json.dumps(exact[0],ensure_ascii=False),flush=True)
+          import requests
+          base='https://quotes.money.163.com/service/chddata.html'
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://quotes.money.163.com/'})
+          tests=[
+            ('target_2001','0000896','20010830','20011231'),
+            ('control_696_2001','0000696','20010830','20011231'),
+            ('target_2002','0000896','20020104','20020301'),
+            ('target_2000','0000896','20000601','20001229'),
+          ]
+          for name,code,start,end in tests:
+            try:
+              r=s.get(base,params={'code':code,'start':start,'end':end,'fields':'TCLOSE;HIGH;LOW;TOPEN;LCLOSE;CHG;PCHG;VOTURNOVER;VATURNOVER'},timeout=30,allow_redirects=True)
+              raw=r.content
+              print('\nTEST',name,'HTTP',r.status_code,'FINAL',r.url,'BYTES',len(raw),'CTYPE',r.headers.get('content-type'),flush=True)
+              text=None
+              for enc in ['gb18030','gbk','utf-8']:
+                try:
+                  text=raw.decode(enc); print('ENC',enc,flush=True); break
+                except: pass
+              if text is None: text=raw.decode('utf-8','replace')
+              lines=[x for x in text.splitlines() if x.strip()]
+              print('LINES',len(lines),flush=True)
+              for ln in lines[:6]: print('HEADROW',ln[:1000],flush=True)
+              if len(lines)>6:
+                for ln in lines[-4:]: print('TAILROW',ln[:1000],flush=True)
+            except Exception as e:
+              print('ERR',name,repr(e),flush=True)
           PY

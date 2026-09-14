@@ -12,30 +12,36 @@ permissions:
 jobs:
   extract:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
-      - name: Extract exact SSE JJYQJ frontend query construction
+      - name: Print compact JJYQJ query contexts
         shell: bash
         run: |
           python - <<'PY'
-          import re, requests
+          import requests
           urls=[
             'https://bond.sse.com.cn/xhtml/js/js_statistical.js',
             'https://bond.sse.com.cn/xhtml/js/area/statistics/js_statistical.js?v=20170516',
           ]
           s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://bond.sse.com.cn/data/statistics/Statistics/netfull/'})
+          needles=['COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L','js_insertJjyqj','insertJjyqj','stock_dataAll','keywordsearch','tDate','commonQuery.do']
           for u in urls:
             try:
-              r=s.get(u,timeout=30)
-              print('\nURL',u,'HTTP',r.status_code,'LEN',len(r.text),'FINAL',r.url,flush=True)
-              js=r.text
+              r=s.get(u,timeout=30); js=r.text
+              print(f'URL {u} HTTP {r.status_code} LEN {len(js)} FINAL {r.url}',flush=True)
             except Exception as e:
               print('ERR',u,repr(e),flush=True); continue
-            for pat in ['js_insertJjyqj','insertJjyqj','COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L','JJYQJ','keywordsearch','tDate','commonQuery.do']:
-              ms=list(re.finditer(re.escape(pat),js,re.I))
-              print('PAT',pat,'COUNT',len(ms),flush=True)
-              for i,m in enumerate(ms[:20]):
-                a=max(0,m.start()-1800); b=min(len(js),m.end()+4000)
-                print(f'--- {pat} #{i+1} ---',flush=True)
+            seen=[]
+            for needle in needles:
+              low=js.lower(); start=0; n=0
+              while n<3:
+                i=low.find(needle.lower(),start)
+                if i<0: break
+                n+=1; start=i+len(needle)
+                a=max(0,i-1400); b=min(len(js),i+len(needle)+3000)
+                key=(a,b)
+                if any(abs(a-x[0])<600 for x in seen): continue
+                seen.append(key)
+                print(f'\n### {needle} hit {n} at {i} ###',flush=True)
                 print(js[a:b],flush=True)
           PY

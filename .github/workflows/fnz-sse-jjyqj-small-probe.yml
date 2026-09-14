@@ -1,0 +1,99 @@
+name: fnz-sse-jjyqj-small-probe
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fnz-sse-jjyqj-small-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Extract only JJYQJ request construction
+        shell: bash
+        run: |
+          python - <<'PY'
+          import re, requests
+
+          urls = [
+              'https://bond.sse.com.cn/xhtml/js/js_statistical.js',
+              'https://bond.sse.com.cn/xhtml/js/area/statistics/js_statistical.js?v=20170516',
+          ]
+          headers = {
+              'User-Agent': 'Mozilla/5.0',
+              'Referer': 'https://bond.sse.com.cn/data/statistics/Statistics/netfull/'
+          }
+
+          def around(text, needle, before=1800, after=4200):
+              i = text.lower().find(needle.lower())
+              if i < 0:
+                  return None
+              return text[max(0, i-before):min(len(text), i+len(needle)+after)]
+
+          def function_block(text, name):
+              pats = [
+                  rf'function\s+{re.escape(name)}\s*\(',
+                  rf'{re.escape(name)}\s*=\s*function\s*\(',
+                  rf'["\']{re.escape(name)}["\']\s*:\s*function\s*\('
+              ]
+              for pat in pats:
+                  m = re.search(pat, text, re.I)
+                  if not m:
+                      continue
+                  brace = text.find('{', m.end())
+                  if brace < 0:
+                      continue
+                  depth = 0
+                  quote = None
+                  esc = False
+                  for j in range(brace, min(len(text), brace+20000)):
+                      c = text[j]
+                      if quote:
+                          if esc:
+                              esc = False
+                          elif c == '\\':
+                              esc = True
+                          elif c == quote:
+                              quote = None
+                          continue
+                      if c in ('"', "'"):
+                          quote = c
+                      elif c == '{':
+                          depth += 1
+                      elif c == '}':
+                          depth -= 1
+                          if depth == 0:
+                              return text[m.start():j+1]
+              return None
+
+          for url in urls:
+              try:
+                  r = requests.get(url, headers=headers, timeout=30)
+                  text = r.text
+                  print(f'URL={url} HTTP={r.status_code} LEN={len(text)} FINAL={r.url}')
+              except Exception as e:
+                  print(f'URL={url} ERROR={e!r}')
+                  continue
+
+              for fname in ['insertJjyqj', 'js_insertJjyqj', 'stock_dataAll']:
+                  block = function_block(text, fname)
+                  if block:
+                      print(f'\n===== FUNCTION {fname} =====')
+                      print(block[:12000])
+
+              needles = [
+                  'COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L',
+                  'js_insertJjyqj', 'stock_dataAll', 'keywordsearch', 'tDate',
+                  'commonQuery.do'
+              ]
+              for needle in needles:
+                  ctx = around(text, needle)
+                  if ctx:
+                      print(f'\n===== CONTEXT {needle} =====')
+                      print(ctx[:6500])
+          PY

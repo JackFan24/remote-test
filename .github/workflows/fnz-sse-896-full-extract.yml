@@ -14,34 +14,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Probe efinance student-paper archive
+      - name: Download tgr.pdf over HTTP
         shell: bash
         run: |
+          set -euo pipefail
           python - <<'PY'
-          import re,requests,urllib.parse
-          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0'})
-          urls=[
-            'https://efinance.org.cn/forum/Students%20Papers.htm',
-            'http://efinance.org.cn/forum/Students%20Papers.htm',
-            'https://www.efinance.org.cn/forum/Students%20Papers.htm',
-          ]
-          for u in urls:
-            try:
-              r=s.get(u,timeout=30); text=r.text
-              print('\nPAGE',u,'HTTP',r.status_code,'FINAL',r.url,'LEN',len(text),flush=True)
-              for needle in ['唐革榕','静态拟合','利率期限结构','Tang']:
-                for m in list(re.finditer(needle,text,re.I))[:10]:
-                  print('HIT',needle,text[max(0,m.start()-1000):m.end()+1800].replace('\n',' ')[:3000],flush=True)
-              for href,label in re.findall(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',text,re.I|re.S):
-                lab=re.sub('<[^>]+>','',label)
-                if any(k in (lab+href) for k in ['唐革榕','静态拟合','利率期限结构','tgr','TGR','tang']):
-                  print('LINK',lab.strip(),urllib.parse.urljoin(r.url,href),flush=True)
-            except Exception as e: print('ERR',u,repr(e),flush=True)
-          # Test a small set of filename candidates only after archive page probe.
-          for fn in ['tgr.pdf','TGR.pdf','tanggr.pdf','tanggerong.pdf']:
-            u='https://efinance.org.cn/forum/'+fn
-            try:
-              r=s.get(u,timeout=15,stream=True); head=next(r.iter_content(8),b'')
-              print('CAND',fn,'HTTP',r.status_code,'CTYPE',r.headers.get('content-type'),'LEN',r.headers.get('content-length'),'HEAD',head,flush=True)
-            except Exception as e: print('CAND_ERR',fn,repr(e),flush=True)
+          import requests,os,hashlib
+          u='http://efinance.org.cn/forum/tgr.pdf'
+          r=requests.get(u,headers={'User-Agent':'Mozilla/5.0','Referer':'http://efinance.org.cn/forum/Students%20Papers.htm'},timeout=45,allow_redirects=True)
+          print('HTTP',r.status_code,'FINAL',r.url,'CTYPE',r.headers.get('content-type'),'BYTES',len(r.content),flush=True)
+          print('HEAD',r.content[:16],flush=True)
+          print('SHA256',hashlib.sha256(r.content).hexdigest(),flush=True)
+          os.makedirs('out',exist_ok=True)
+          open('out/tgr.pdf','wb').write(r.content)
+          if r.status_code!=200 or not r.content.startswith(b'%PDF'):
+              raise SystemExit('not a PDF')
           PY
+      - name: Basic PDF text probe
+        shell: bash
+        run: |
+          pdftotext -layout out/tgr.pdf out/tgr.txt || true
+          echo PAGES=$(pdfinfo out/tgr.pdf 2>/dev/null | awk '/^Pages:/ {print $2}')
+          echo TEXT_BYTES=$(wc -c < out/tgr.txt 2>/dev/null || echo 0)
+          grep -a -n -E '000896|96国债|2001年8月30|2001-08-30|数据来源|色诺芬|交易日|附录' out/tgr.txt | head -100 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tang-gerong-dissertation
+          path: |
+            out/tgr.pdf
+            out/tgr.txt

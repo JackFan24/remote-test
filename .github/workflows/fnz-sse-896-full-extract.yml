@@ -12,37 +12,61 @@ permissions:
 jobs:
   extract:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Probe NetEase historical CSV for old treasury bonds
+      - name: Probe TDX public daily history
         shell: bash
         run: |
+          python -m pip install -q pytdx
           python - <<'PY'
-          import requests
-          base='https://quotes.money.163.com/service/chddata.html'
-          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://quotes.money.163.com/'})
-          tests=[
-            ('target_2001','0000896','20010830','20011231'),
-            ('control_696_2001','0000696','20010830','20011231'),
-            ('target_2002','0000896','20020104','20020301'),
-            ('target_2000','0000896','20000601','20001229'),
-          ]
-          for name,code,start,end in tests:
-            try:
-              r=s.get(base,params={'code':code,'start':start,'end':end,'fields':'TCLOSE;HIGH;LOW;TOPEN;LCLOSE;CHG;PCHG;VOTURNOVER;VATURNOVER'},timeout=30,allow_redirects=True)
-              raw=r.content
-              print('\nTEST',name,'HTTP',r.status_code,'FINAL',r.url,'BYTES',len(raw),'CTYPE',r.headers.get('content-type'),flush=True)
-              text=None
-              for enc in ['gb18030','gbk','utf-8']:
-                try:
-                  text=raw.decode(enc); print('ENC',enc,flush=True); break
-                except: pass
-              if text is None: text=raw.decode('utf-8','replace')
-              lines=[x for x in text.splitlines() if x.strip()]
-              print('LINES',len(lines),flush=True)
-              for ln in lines[:6]: print('HEADROW',ln[:1000],flush=True)
-              if len(lines)>6:
-                for ln in lines[-4:]: print('TAILROW',ln[:1000],flush=True)
-            except Exception as e:
-              print('ERR',name,repr(e),flush=True)
+          import json,sys
+          from pytdx.hq import TdxHq_API
+          try:
+              from pytdx.util.best_ip import select_best_ip
+              best=select_best_ip('stock')
+              print('BEST',best,flush=True)
+              ip=best['ip']; port=best['port']
+          except Exception as e:
+              print('BEST_IP_ERR',repr(e),flush=True)
+              candidates=[
+                  ('119.147.212.81',7709),('119.147.212.81',7721),
+                  ('218.75.126.9',7709),('124.74.236.94',7709),
+                  ('60.191.117.167',7709),('115.238.56.198',7709)
+              ]
+              ip=port=None
+              for a,p in candidates:
+                  api=TdxHq_API(heartbeat=True,auto_retry=True,raise_exception=True)
+                  try:
+                      if api.connect(a,p,time_out=1.5):
+                          ip,port=a,p; api.disconnect(); print('CAND_OK',a,p,flush=True); break
+                  except Exception as ee: print('CAND_FAIL',a,p,repr(ee),flush=True)
+              if not ip: sys.exit(2)
+
+          api=TdxHq_API(heartbeat=True,auto_retry=True,raise_exception=True)
+          with api.connect(ip,port,time_out=3):
+              print('CONNECTED',ip,port,flush=True)
+              for code in ['000896','000696','009704']:
+                  allbars=[]
+                  # TDX returns at most 800; delisted issue should fit in first 1600 bars.
+                  for start in [0,800,1600]:
+                      try:
+                          bars=api.get_security_bars(9,1,code,start,800) or []
+                      except Exception as e:
+                          print('BAR_ERR',code,start,repr(e),flush=True); bars=[]
+                      print('COUNT',code,'START',start,'N',len(bars),flush=True)
+                      allbars.extend(bars)
+                      if len(bars)<800: break
+                  # de-dup by datetime
+                  uniq={str(b.get('datetime')):b for b in allbars if b.get('datetime')}
+                  bars=sorted(uniq.values(),key=lambda b:str(b.get('datetime')))
+                  print('TOTAL',code,len(bars),flush=True)
+                  if bars:
+                      print('FIRST',code,json.dumps(bars[0],ensure_ascii=False),flush=True)
+                      print('LAST',code,json.dumps(bars[-1],ensure_ascii=False),flush=True)
+                  target=[b for b in bars if '2001-' in str(b.get('datetime',''))]
+                  print('Y2001',code,len(target),flush=True)
+                  for b in target[:5]: print('Y2001_HEAD',code,json.dumps(b,ensure_ascii=False),flush=True)
+                  for b in target[-5:]: print('Y2001_TAIL',code,json.dumps(b,ensure_ascii=False),flush=True)
+                  anchor=[b for b in bars if str(b.get('datetime','')).startswith('2001-12-31')]
+                  print('ANCHOR',code,json.dumps(anchor,ensure_ascii=False),flush=True)
           PY

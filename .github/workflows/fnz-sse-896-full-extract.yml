@@ -14,34 +14,62 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Print compact JJYQJ query contexts
+      - name: Probe 2001-12-31 anchor with real SSE params
         shell: bash
         run: |
           python - <<'PY'
-          import requests
-          urls=[
-            'https://bond.sse.com.cn/xhtml/js/js_statistical.js',
-            'https://bond.sse.com.cn/xhtml/js/area/statistics/js_statistical.js?v=20170516',
+          import json,re,requests
+          base='https://query.sse.com.cn/commonQuery.do'
+          sqls=[
+            'COMMON_SSE_SJ_ZQSJ_JJYQJ_L',
+            'COMMON_SSE_SCSJ_SCTJ_ZXTJ_JJYQJ_L',
+            'COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L',
           ]
-          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://bond.sse.com.cn/data/statistics/Statistics/netfull/'})
-          needles=['COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L','js_insertJjyqj','insertJjyqj','stock_dataAll','keywordsearch','tDate','commonQuery.do']
-          for u in urls:
-            try:
-              r=s.get(u,timeout=30); js=r.text
-              print(f'URL {u} HTTP {r.status_code} LEN {len(js)} FINAL {r.url}',flush=True)
-            except Exception as e:
-              print('ERR',u,repr(e),flush=True); continue
-            seen=[]
-            for needle in needles:
-              low=js.lower(); start=0; n=0
-              while n<3:
-                i=low.find(needle.lower(),start)
-                if i<0: break
-                n+=1; start=i+len(needle)
-                a=max(0,i-1400); b=min(len(js),i+len(needle)+3000)
-                key=(a,b)
-                if any(abs(a-x[0])<600 for x in seen): continue
-                seen.append(key)
-                print(f'\n### {needle} hit {n} at {i} ###',flush=True)
-                print(js[a:b],flush=True)
+          headers={
+            'User-Agent':'Mozilla/5.0',
+            'Referer':'https://bond.sse.com.cn/data/statistics/Statistics/netfull/index_his.shtml',
+            'Accept':'application/json,text/javascript,*/*;q=0.8',
+          }
+          s=requests.Session(); s.headers.update(headers)
+          def parse(txt):
+            try:return json.loads(txt)
+            except: pass
+            m=re.search(r'^[^(]*\((.*)\)\s*;?\s*$',txt,re.S)
+            if m:
+              try:return json.loads(m.group(1))
+              except:return None
+            return None
+          def rows_of(j):
+            if isinstance(j,dict):
+              for k in ['result','data','rows']:
+                if isinstance(j.get(k),list): return j[k]
+            return []
+          for sql in sqls:
+            for code in ['', '000896', '896']:
+              p={
+                'isPagination':'true',
+                'pageHelp.pageSize':'100',
+                'sqlId':sql,
+                'SEARCH_DATE':'2001-12-31',
+                'SEC_CODE':code,
+              }
+              try:
+                r=s.get(base,params=p,timeout=30)
+                j=parse(r.text); rows=rows_of(j)
+                print('\nTEST',sql,'CODE',repr(code),'HTTP',r.status_code,'BYTES',len(r.content),'ROWS',len(rows),flush=True)
+                if isinstance(j,dict):
+                  ph=j.get('pageHelp') or {}
+                  print('PAGEHELP',json.dumps(ph,ensure_ascii=False)[:1000],flush=True)
+                hits=[]
+                for x in rows:
+                  blob=json.dumps(x,ensure_ascii=False)
+                  if any(q in blob for q in ['000896','96国债','国债(8)','国债（8）','112.10','113.53','112.1']):
+                    hits.append(x)
+                print('HITS',json.dumps(hits,ensure_ascii=False)[:8000],flush=True)
+                if not hits and rows:
+                  print('FIRST3',json.dumps(rows[:3],ensure_ascii=False)[:5000],flush=True)
+                if not rows:
+                  print('HEAD',r.text[:1000].replace('\n',' '),flush=True)
+              except Exception as e:
+                print('ERR',sql,code,repr(e),flush=True)
           PY

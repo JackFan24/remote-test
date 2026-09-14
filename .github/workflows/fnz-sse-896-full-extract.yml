@@ -14,17 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Probe legacy queryDate/securityCode
+      - name: Identify legacy date bind params
         shell: bash
         run: |
           python - <<'PY'
           import json,re,requests
           base='https://query.sse.com.cn/commonQuery.do'
           sql='COMMON_SSEBOND_SCSJ_SCTJ_ZXTJ_JJYQJ_CX_L'
-          s=requests.Session(); s.headers.update({
-            'User-Agent':'Mozilla/5.0',
-            'Referer':'https://bond.sse.com.cn/data/statistics/Statistics/netfull/index_his.shtml',
-            'Accept':'application/json,text/javascript,*/*;q=0.8'})
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://bond.sse.com.cn/data/statistics/Statistics/netfull/index_his.shtml','Accept':'application/json,text/javascript,*/*;q=0.8'})
           def parse(t):
             try:return json.loads(t)
             except: pass
@@ -33,31 +30,21 @@ jobs:
               try:return json.loads(m.group(1))
               except:return None
           tests=[
-            ('date_hyphen_only', {'queryDate':'2001-12-31','securityCode':''}),
-            ('date_compact_only', {'queryDate':'20011231','securityCode':''}),
-            ('hyphen_000896', {'queryDate':'2001-12-31','securityCode':'000896'}),
-            ('compact_000896', {'queryDate':'20011231','securityCode':'000896'}),
-            ('hyphen_896', {'queryDate':'2001-12-31','securityCode':'896'}),
-            ('compact_896', {'queryDate':'20011231','securityCode':'896'}),
+            ('START_END_hyphen', {'START_DATE':'2001-12-31','END_DATE':'2001-12-31'}),
+            ('START_END_compact', {'START_DATE':'20011231','END_DATE':'20011231'}),
+            ('BEGIN_END_hyphen', {'BEGIN_DATE':'2001-12-31','END_DATE':'2001-12-31'}),
+            ('TRADE_DATE_hyphen', {'TRADE_DATE':'2001-12-31'}),
+            ('DATE_hyphen', {'DATE':'2001-12-31'}),
+            ('TXDATE_compact', {'TXDATE':'20011231'}),
           ]
           for name,x in tests:
-            p={'isPagination':'true','pageHelp.pageSize':'500','sqlId':sql,**x}
+            p={'isPagination':'true','pageHelp.pageSize':'100','sqlId':sql,**x}
             r=s.get(base,params=p,timeout=30); j=parse(r.text)
             rows=[]
-            if isinstance(j,dict):
-              rows=j.get('result') or ((j.get('pageHelp') or {}).get('data')) or []
-            print('\nTEST',name,'HTTP',r.status_code,'BYTES',len(r.content),'ROWS',len(rows),flush=True)
-            if isinstance(j,dict):
-              print('ECHO queryDate=',repr(j.get('queryDate')),'securityCode=',repr(j.get('securityCode')),'type=',repr(j.get('type')),flush=True)
-            hits=[]
-            for z in rows:
-              blob=json.dumps(z,ensure_ascii=False)
-              if any(q in blob for q in ['000896','96国债','国债⑻','国债(8)','国债（8）']): hits.append(z)
-            print('HITS',json.dumps(hits,ensure_ascii=False)[:8000],flush=True)
-            if rows:
-              print('FIRST',json.dumps(rows[0],ensure_ascii=False)[:2000],flush=True)
-              dates=sorted({str(z.get('TXDATE') or z.get('TRADE_DATE') or '') for z in rows})
-              print('DATES',dates[:5],dates[-5:],flush=True)
-            else:
-              print('HEAD',r.text[:1000].replace('\n',' '),flush=True)
+            if isinstance(j,dict): rows=j.get('result') or ((j.get('pageHelp') or {}).get('data')) or []
+            dates=sorted({str(z.get('TXDATE') or z.get('TRADE_DATE') or '') for z in rows})
+            hits=[z for z in rows if any(q in json.dumps(z,ensure_ascii=False) for q in ['000896','96国债','国债⑻','国债(8)','国债（8）'])]
+            print('\nTEST',name,'HTTP',r.status_code,'ROWS',len(rows),'DATES',dates[:3],dates[-3:],flush=True)
+            print('HITS',json.dumps(hits,ensure_ascii=False)[:5000],flush=True)
+            if rows: print('FIRST',json.dumps(rows[0],ensure_ascii=False)[:1500],flush=True)
           PY

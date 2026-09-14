@@ -12,42 +12,31 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
-      - name: Probe Eastmoney historical K-lines
+      - name: Probe 2001 China Securities Journal static PDFs
         shell: bash
         run: |
           python - <<'PY'
-          import json,requests
-          urls=[
-            'https://push2his.eastmoney.com/api/qt/stock/kline/get',
-            'https://push2his.eastmoney.com/api/qt/stock/kline/get'
-          ]
-          tests=[
-            ('target_all','1.000896','20000601','20031231'),
-            ('target_2001','1.000896','20010830','20011231'),
-            ('control_696','1.000696','20010830','20011231'),
-            ('target_2002','1.000896','20020104','20020301'),
-          ]
-          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://quote.eastmoney.com/'})
-          for name,secid,beg,end in tests:
-            p={
-              'secid':secid,'klt':'101','fqt':'0','beg':beg,'end':end,'lmt':'1000000',
-              'fields1':'f1,f2,f3,f4,f5,f6',
-              'fields2':'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61'
-            }
-            try:
-              r=s.get(urls[0],params=p,timeout=30)
-              print('\nTEST',name,'HTTP',r.status_code,'BYTES',len(r.content),'URL',r.url,flush=True)
-              print('HEAD',r.text[:500].replace('\n',' '),flush=True)
-              j=r.json(); data=j.get('data') if isinstance(j,dict) else None
-              if not data:
-                print('NO_DATA',json.dumps(j,ensure_ascii=False)[:2000],flush=True); continue
-              ks=data.get('klines') or []
-              print('NAME',data.get('name'),'CODE',data.get('code'),'MARKET',data.get('market'),'KLINES',len(ks),flush=True)
-              for x in ks[:5]: print('K_HEAD',x,flush=True)
-              for x in ks[-5:]: print('K_TAIL',x,flush=True)
-              a=[x for x in ks if x.startswith('2001-12-31,') or x.startswith('2002-01-04,')]
-              print('ANCHORS',a,flush=True)
-            except Exception as e: print('ERR',name,repr(e),flush=True)
+          import requests
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://epaper.cs.com.cn/'})
+          controls=['https://epaper.cs.com.cn/zgzqb/images/2005-07/09/B16/zgzqb20050709B16.pdf']
+          for u in controls:
+              try:
+                  r=s.get(u,timeout=20,stream=True); head=next(r.iter_content(16),b'')
+                  print('CONTROL',r.status_code,r.headers.get('content-type'),r.headers.get('content-length'),head,flush=True)
+              except Exception as e: print('CONTROL_ERR',repr(e),flush=True)
+          for day in ['29','31']:
+            date=f'2001-12/{day}'; ymd=f'200112{day}'
+            for sec in ['A','B','C','D']:
+              for n in range(1,33):
+                page=f'{sec}{n:02d}'
+                u=f'https://epaper.cs.com.cn/zgzqb/images/{date}/{page}/zgzqb{ymd}{page}.pdf'
+                try:
+                  r=s.get(u,timeout=8,stream=True)
+                  ctype=(r.headers.get('content-type') or '').lower(); clen=r.headers.get('content-length')
+                  head=next(r.iter_content(8),b'') if r.status_code==200 else b''
+                  if r.status_code==200 and (b'%PDF' in head or 'pdf' in ctype):
+                    print('FOUND',u,'CTYPE',ctype,'LEN',clen,'HEAD',head,flush=True)
+                except Exception: pass
           PY

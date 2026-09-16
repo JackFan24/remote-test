@@ -14,44 +14,35 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Query target with public preview and native rules
+      - name: Inspect public Pinggu thread metadata only
         shell: bash
         run: |
           python - <<'PY'
-          import json,requests,time
-          base='https://www.ccerdata.cn'; lid='9012'; sid='901201'; vid='9028'
-          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Accept-Language':'zh-CN,zh;q=0.9','X-Requested-With':'XMLHttpRequest'})
-          # Public metadata; no credential discovery or private login flow.
-          meta=s.get(base+'/product/getView',params={'id':vid,'sid':sid,'lid':lid},timeout=30)
-          print('META_HTTP',meta.status_code,'BYTES',len(meta.content),flush=True)
-          try: mv=meta.json()
-          except Exception as e: print('META_BAD',meta.text[:500],repr(e),flush=True); raise SystemExit(1)
-          fields=[str(f.get('id')) for fs in (mv.get('groupFields') or {}).values() for f in fs]
-          print('FIELDS',len(fields),flush=True)
-          date_range={'fieldId':'9028019','type':'DateRange','data':{'min':20010830,'max':20011231}}
-          def r(name,op,value): return {'name':str(name),'operator':op,'value':str(value)}
-          def g(*rules): return {'relation':'and','rules':list(rules),'groups':[]}
-          probes=[
-            ('maturity',[date_range,g(r('9028006','eq','20031101'))]),
-            ('coupon',[date_range,g(r('9028014','eq','0.0856'))]),
-            ('both',[date_range,g(r('9028006','eq','20031101'),r('9028014','eq','0.0856'))]),
-            ('code896',[date_range,g(r('9028002','eq','000896'))]),
-            ('code101968',[date_range,g(r('9028002','eq','101968'))]),
-            ('name96',[date_range,g(r('9028004','cn','96国债'))]),
+          import requests,re,html
+          urls=[
+            'https://bbs.pinggu.org/thread-396506-1-1.html',
+            'http://bbs.pinggu.org/thread-396506-1-1.html',
+            'https://bbs.pinggu.org/jg/shuju_shujuku_396506_1.html'
           ]
-          def rows(j):
-            d=(j.get('rows') or j.get('data') or j.get('result') or []) if isinstance(j,dict) else []
-            if isinstance(d,dict): d=d.get('rows') or d.get('data') or []
-            return d
-          def slim(x):
-            return {'uid':x.get('f_0'),'code':x.get('f_1'),'name':x.get('f_3'),'maturity':x.get('f_5'),'coupon':x.get('f_13'),'date':x.get('f_18'),'exchange':x.get('f_19'),'prev':x.get('f_20'),'open':x.get('f_21'),'high':x.get('f_22'),'low':x.get('f_23'),'close':x.get('f_24'),'avg':x.get('f_26'),'accrued':x.get('f_27'),'ytm':x.get('f_29'),'volume':x.get('f_30'),'amount':x.get('f_31')}
-          for label,conditions in probes:
-            p={'libraryId':lid,'subLibraryId':sid,'viewId':vid,'fields':fields,'conditions':conditions,'join':[]}
-            z=s.get(base+'/product/preview',params={'data':json.dumps(p,separators=(',',':')),'page':1,'rows':100},timeout=30)
-            print('\nPROBE',label,'HTTP',z.status_code,'BYTES',len(z.content),flush=True)
-            try:j=z.json(); d=rows(j)
-            except Exception as e: print('BAD',z.text[:1000],repr(e),flush=True); continue
-            print('TOTAL',j.get('total'),'ROWS',len(d),'ERROR',j.get('error'),flush=True)
-            for x in d: print('HIT',json.dumps(slim(x),ensure_ascii=False),flush=True)
-            time.sleep(.2)
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0'})
+          for u in urls:
+            try:
+              r=s.get(u,timeout=30,allow_redirects=True)
+              t=r.text
+              print('\nURL',u,'HTTP',r.status_code,'FINAL',r.url,'BYTES',len(r.content),flush=True)
+              title=re.search(r'<title>(.*?)</title>',t,re.I|re.S)
+              if title: print('TITLE',re.sub('<[^>]+>','',html.unescape(title.group(1))).strip(),flush=True)
+              plain=re.sub(r'<script.*?</script>|<style.*?</style>',' ',t,flags=re.I|re.S)
+              plain=re.sub(r'<[^>]+>',' ',plain)
+              plain=html.unescape(re.sub(r'\s+',' ',plain))
+              for needle in ['资料名称','文件格式','文件数','附件','rar','国债现货','交易数据库','下载','2008']:
+                for m in list(re.finditer(needle,plain,re.I))[:12]:
+                  print('TEXT',needle,plain[max(0,m.start()-500):m.end()+1000],flush=True)
+              # Public attachment/link metadata only; do not follow or download attachments.
+              for href,label in re.findall(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',t,re.I|re.S):
+                lab=re.sub('<[^>]+>',' ',label); lab=html.unescape(re.sub(r'\s+',' ',lab)).strip()
+                h=html.unescape(href)
+                if any(k in (h+' '+lab).lower() for k in ['attach','rar','download','396506']) or '国债' in lab:
+                  print('LINK_META',lab[:300],h[:1000],flush=True)
+            except Exception as e: print('ERR',u,repr(e),flush=True)
           PY

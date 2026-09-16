@@ -12,90 +12,46 @@ permissions:
 jobs:
   identify:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
-      - name: Query 96 bond 8 by trade date maturity and coupon
+      - name: Query target with public preview and native rules
         shell: bash
         run: |
           python - <<'PY'
-          import json,re,requests,time
+          import json,requests,time
           base='https://www.ccerdata.cn'; lid='9012'; sid='901201'; vid='9028'
-          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Accept-Language':'zh-CN,zh;q=0.9'})
-          s.get(base+'/login?target=/database',timeout=30)
-          js=s.get(base+'/js/login.js',timeout=30).text
-          m=re.search(r'postnologin=function\(\).*?post\(["\'](/login/signin)["\'],\{User:["\']([^"\']+)["\'],Password:["\']([^"\']+)["\']\}',js,re.S)
-          endpoint,user,pwd=m.groups()
-          rr=s.post(base+endpoint,data={'User':user,'Password':pwd},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
-          print('ANON',rr.status_code,rr.text[:160],flush=True)
-          meta=s.get(base+'/product/getView',params={'id':vid,'sid':sid,'lid':lid},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30).json()
-          fields=[]; fmap={}
-          for grp,fs in (meta.get('groupFields') or {}).items():
-            for f in fs:
-              fid=str(f.get('id')); fields.append(fid)
-              fmap[fid]={'group':grp,'fullName':f.get('fullName'),'dataType':f.get('dataType'),'queryType':f.get('queryType')}
-          # Positional response map: f_18=9028019 date, f_24=9028025 close, f_27=9028028 accrued interest.
-          trade_date={'fieldId':'9028019','type':'DateRange','data':{'min':20010830,'max':20011231}}
-          maturity={'fieldId':'9028006','type':'eq','data':20031101}
-          coupon_num={'fieldId':'9028014','type':'eq','data':0.0856}
-          coupon_str={'fieldId':'9028014','type':'eq','data':'0.0856'}
-          code896={'fieldId':'9028002','type':'eq','data':'000896'}
-          code101968={'fieldId':'9028002','type':'eq','data':'101968'}
-          uid={'fieldId':'9028001','type':'eq','data':'20031101.208560'}
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Accept-Language':'zh-CN,zh;q=0.9','X-Requested-With':'XMLHttpRequest'})
+          # Public metadata; no credential discovery or private login flow.
+          meta=s.get(base+'/product/getView',params={'id':vid,'sid':sid,'lid':lid},timeout=30)
+          print('META_HTTP',meta.status_code,'BYTES',len(meta.content),flush=True)
+          try: mv=meta.json()
+          except Exception as e: print('META_BAD',meta.text[:500],repr(e),flush=True); raise SystemExit(1)
+          fields=[str(f.get('id')) for fs in (mv.get('groupFields') or {}).values() for f in fs]
+          print('FIELDS',len(fields),flush=True)
+          date_range={'fieldId':'9028019','type':'DateRange','data':{'min':20010830,'max':20011231}}
+          def r(name,op,value): return {'name':str(name),'operator':op,'value':str(value)}
+          def g(*rules): return {'relation':'and','rules':list(rules),'groups':[]}
           probes=[
-            ('date_only',[trade_date]),
-            ('date_maturity',[trade_date,{'relation':'and','rules':[maturity],'groups':[]}]),
-            ('date_coupon_num',[trade_date,{'relation':'and','rules':[coupon_num],'groups':[]}]),
-            ('date_coupon_str',[trade_date,{'relation':'and','rules':[coupon_str],'groups':[]}]),
-            ('date_maturity_coupon',[trade_date,{'relation':'and','rules':[maturity,coupon_num],'groups':[]}]),
-            ('date_code896',[trade_date,{'relation':'and','rules':[code896],'groups':[]}]),
-            ('date_code101968',[trade_date,{'relation':'and','rules':[code101968],'groups':[]}]),
-            ('date_uid',[trade_date,{'relation':'and','rules':[uid],'groups':[]}]),
+            ('maturity',[date_range,g(r('9028006','eq','20031101'))]),
+            ('coupon',[date_range,g(r('9028014','eq','0.0856'))]),
+            ('both',[date_range,g(r('9028006','eq','20031101'),r('9028014','eq','0.0856'))]),
+            ('code896',[date_range,g(r('9028002','eq','000896'))]),
+            ('code101968',[date_range,g(r('9028002','eq','101968'))]),
+            ('name96',[date_range,g(r('9028004','cn','96国债'))]),
           ]
-          def rows_of(j):
+          def rows(j):
             d=(j.get('rows') or j.get('data') or j.get('result') or []) if isinstance(j,dict) else []
             if isinstance(d,dict): d=d.get('rows') or d.get('data') or []
             return d
-          def summarize(row):
-            # all 36 fields retained for audit, plus readable subset
-            return {
-              'uid':row.get('f_0'),'code':row.get('f_1'),'full':row.get('f_2'),'abbr':row.get('f_3'),
-              'issue':row.get('f_4'),'maturity':row.get('f_5'),'coupon':row.get('f_13'),
-              'date':row.get('f_18'),'exchange':row.get('f_19'),
-              'prev_close':row.get('f_20'),'open':row.get('f_21'),'high':row.get('f_22'),'low':row.get('f_23'),
-              'close':row.get('f_24'),'avg':row.get('f_26'),'accrued':row.get('f_27'),
-              'ytm':row.get('f_29'),'volume':row.get('f_30'),'amount':row.get('f_31'),
-              '_raw':row
-            }
+          def slim(x):
+            return {'uid':x.get('f_0'),'code':x.get('f_1'),'name':x.get('f_3'),'maturity':x.get('f_5'),'coupon':x.get('f_13'),'date':x.get('f_18'),'exchange':x.get('f_19'),'prev':x.get('f_20'),'open':x.get('f_21'),'high':x.get('f_22'),'low':x.get('f_23'),'close':x.get('f_24'),'avg':x.get('f_26'),'accrued':x.get('f_27'),'ytm':x.get('f_29'),'volume':x.get('f_30'),'amount':x.get('f_31')}
           for label,conditions in probes:
-            payload={'libraryId':lid,'subLibraryId':sid,'viewId':vid,'fields':fields,'conditions':conditions,'join':[]}
-            r=s.get(base+'/product/preview',params={'data':json.dumps(payload,separators=(',',':')),'page':1,'rows':100},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
-            print('\nPROBE',label,'HTTP',r.status_code,'BYTES',len(r.content),flush=True)
-            try:j=r.json()
-            except Exception as e:
-              print('BADJSON',r.text[:1000],repr(e),flush=True); continue
-            d=rows_of(j)
-            print('TOTAL',j.get('total') if isinstance(j,dict) else None,'ROWS',len(d),'ERROR',j.get('error') if isinstance(j,dict) else None,flush=True)
-            if label=='date_only':
-              # Scan the first preview page by intrinsic fields without trusting query operators.
-              for row in d:
-                mat=(str(row.get('f_5','')).strip()=='20031101' and str(row.get('f_13','')).strip() in {'0.0856','.0856','0.085600'})
-                namehit=('96国债' in str(row.get('f_2','')) or '96国债' in str(row.get('f_3','')))
-                codehit=str(row.get('f_1','')).strip() in {'000896','101968'}
-                if mat or namehit or codehit:
-                  print('DATEPAGE_HIT',json.dumps(summarize(row),ensure_ascii=False),flush=True)
-              # show first/last few rows to verify the date condition really binds f_18
-              for row in (d[:3]+d[-3:] if len(d)>3 else d): print('DATEPAGE_SAMPLE',json.dumps(summarize(row),ensure_ascii=False),flush=True)
-            else:
-              for row in d[:20]: print('HIT',json.dumps(summarize(row),ensure_ascii=False),flush=True)
+            p={'libraryId':lid,'subLibraryId':sid,'viewId':vid,'fields':fields,'conditions':conditions,'join':[]}
+            z=s.get(base+'/product/preview',params={'data':json.dumps(p,separators=(',',':')),'page':1,'rows':100},timeout=30)
+            print('\nPROBE',label,'HTTP',z.status_code,'BYTES',len(z.content),flush=True)
+            try:j=z.json(); d=rows(j)
+            except Exception as e: print('BAD',z.text[:1000],repr(e),flush=True); continue
+            print('TOTAL',j.get('total'),'ROWS',len(d),'ERROR',j.get('error'),flush=True)
+            for x in d: print('HIT',json.dumps(slim(x),ensure_ascii=False),flush=True)
             time.sleep(.2)
-
-          # Two exact-date anchors are diagnostic: target 2001-12-31 and an earlier target date.
-          for ds in [20010830,20011030,20011228,20011231]:
-            conditions=[{'fieldId':'9028019','type':'eq','data':ds},{'relation':'and','rules':[maturity,coupon_num],'groups':[]}]
-            payload={'libraryId':lid,'subLibraryId':sid,'viewId':vid,'fields':fields,'conditions':conditions,'join':[]}
-            r=s.get(base+'/product/preview',params={'data':json.dumps(payload,separators=(',',':')),'page':1,'rows':100},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
-            try:j=r.json(); d=rows_of(j)
-            except Exception as e: print('DATE_ERR',ds,repr(e),flush=True); continue
-            print('\nEXACT_DATE',ds,'TOTAL',j.get('total'),'ROWS',len(d),'ERROR',j.get('error'),flush=True)
-            for row in d[:20]: print('EXACT_HIT',json.dumps(summarize(row),ensure_ascii=False),flush=True)
           PY

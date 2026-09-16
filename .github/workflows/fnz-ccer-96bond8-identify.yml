@@ -12,36 +12,72 @@ permissions:
 jobs:
   identify:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Query target bond by intrinsic identifiers
+      - name: Scan all 2001 treasury rows by intrinsic identifiers
         shell: bash
         run: |
-          mkdir -p ccer_96bond8_identify
           python - <<'PY'
-          import json,re,requests
-          base='https://www.ccerdata.cn'
+          import json,re,requests,time
+          base='https://www.ccerdata.cn'; lid='9012'; sid='901201'; vid='9028'
           s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0','Accept-Language':'zh-CN,zh;q=0.9'})
           s.get(base+'/login?target=/database',timeout=30)
-          text=s.get(base+'/js/login.js',timeout=30).text
-          m=re.search(r'postnologin=function\(\).*?post\(["\'](/login/signin)["\'],\{User:["\']([^"\']+)["\'],Password:["\']([^"\']+)["\']\}',text,re.S)
+          js=s.get(base+'/js/login.js',timeout=30).text
+          m=re.search(r'postnologin=function\(\).*?post\(["\'](/login/signin)["\'],\{User:["\']([^"\']+)["\'],Password:["\']([^"\']+)["\']\}',js,re.S)
           endpoint,user,pwd=m.groups()
-          s.post(base+endpoint,data={'User':user,'Password':pwd},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
-          fields=['9028001','9028002','9028003','9028004','9028006','9028014','9028019','9028020','9028025','9028028']
-          base_date={'fieldId':'9028019','type':'DateRange','data':{'min':20010830,'max':20011231}}
-          probes=[
-            ('unique_id',{'fieldId':'9028001','type':'eq','data':'20031101.208560'}),
-            ('maturity',{'fieldId':'9028006','type':'eq','data':'20031101'}),
-            ('abbr96',{'fieldId':'9028004','type':'cn','data':'96'})
-          ]
-          for label,rule in probes:
-              conditions=[base_date,{'relation':'and','rules':[rule],'groups':[]}]
-              payload={'libraryId':'9012','subLibraryId':'901201','viewId':'9028','fields':fields,'conditions':conditions,'join':[]}
-              r=s.get(base+'/product/preview',params={'data':json.dumps(payload,separators=(',',':')),'page':1,'rows':100},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
-              print('\nPROBE',label,'HTTP',r.status_code,'BODY',r.text[:12000].replace('\n',' '),flush=True)
-              open(f'ccer_96bond8_identify/{label}.json','w',encoding='utf-8').write(r.text)
+          rr=s.post(base+endpoint,data={'User':user,'Password':pwd},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
+          print('ANON',rr.status_code,rr.text[:200],flush=True)
+          meta=s.get(base+'/product/getView',params={'id':vid,'sid':sid,'lid':lid},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30).json()
+          fields=[]
+          fmap={}
+          for grp,fs in (meta.get('groupFields') or {}).items():
+            for f in fs:
+              fid=str(f.get('id')); fields.append(fid)
+              fmap[fid]={'group':grp,'fullName':f.get('fullName'),'name':f.get('name'),'dataType':f.get('dataType'),'queryType':f.get('queryType')}
+          print('NFIELDS',len(fields),flush=True)
+          for fid in fields: print('FIELD',fid,json.dumps(fmap[fid],ensure_ascii=False),flush=True)
+          datefid=None
+          for fid,x in fmap.items():
+            txt=' '.join(str(x.get(k) or '') for k in ['fullName','name']).lower()
+            if ('交易日期' in txt) or ('日期' in txt and datefid is None): datefid=fid
+          print('DATE_FIELD',datefid,flush=True)
+          cond=[]
+          if datefid:
+            cond=[{'fieldId':datefid,'type':'DateRange','data':{'min':20010830,'max':20011231}}]
+          payload={'libraryId':lid,'subLibraryId':sid,'viewId':vid,'fields':fields,'conditions':cond,'join':[]}
+          needles=['000896','101968','96国债','96国债(8)','96国债⑻','8.56','20031101','2003-11-01']
+          total_rows=0; hits=[]
+          for page in range(1,16):
+            r=s.get(base+'/product/preview',params={'data':json.dumps(payload,separators=(',',':')),'page':page,'rows':200},headers={'X-Requested-With':'XMLHttpRequest'},timeout=30)
+            print('\nPAGE',page,'HTTP',r.status_code,'BYTES',len(r.content),flush=True)
+            try:j=r.json()
+            except Exception as e:
+              print('BADJSON',r.text[:1000],repr(e),flush=True); break
+            print('TOPKEYS',list(j.keys()) if isinstance(j,dict) else type(j).__name__,flush=True)
+            data=(j.get('rows') or j.get('data') or j.get('result') or []) if isinstance(j,dict) else []
+            if isinstance(data,dict): data=data.get('rows') or data.get('data') or []
+            print('ROWS',len(data),flush=True)
+            if not data: break
+            total_rows += len(data)
+            for row in data:
+              blob=json.dumps(row,ensure_ascii=False)
+              if any(n in blob for n in needles):
+                hits.append(row); print('HIT',json.dumps(row,ensure_ascii=False),flush=True)
+            if len(data)<200: break
+            time.sleep(.15)
+          print('\nTOTAL_ROWS',total_rows,'HITS',len(hits),flush=True)
+          # Fallback targeted queries by every field for strong intrinsic identifiers.
+          if not hits:
+            for needle in ['8.56','20031101','96国债','101968','000896']:
+              for fid in fields:
+                rules=[{'fieldId':fid,'type':'cn','data':needle}]
+                conditions=(cond + [{'relation':'and','rules':rules,'groups':[]}]) if cond else [{'relation':'and','rules':rules,'groups':[]}]
+                pp={'libraryId':lid,'subLibraryId':sid,'viewId':vid,'fields':fields,'conditions':conditions,'join':[]}
+                try:
+                  r=s.get(base+'/product/preview',params={'data':json.dumps(pp,separators=(',',':')),'page':1,'rows':50},headers={'X-Requested-With':'XMLHttpRequest'},timeout=15)
+                  j=r.json(); d=(j.get('rows') or j.get('data') or j.get('result') or []) if isinstance(j,dict) else []
+                  if isinstance(d,dict): d=d.get('rows') or d.get('data') or []
+                  if d: print('TARGET',needle,'FIELD',fid,fmap[fid],json.dumps(d[:5],ensure_ascii=False),flush=True)
+                except: pass
+              time.sleep(.05)
           PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: fnz-ccer-96bond8-identify
-          path: ccer_96bond8_identify/

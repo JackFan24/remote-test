@@ -14,25 +14,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fetch public asset
+      - name: Inspect public CCER query condition JavaScript
         shell: bash
         run: |
-          mkdir -p ccer_querycondition
           python - <<'PY'
           import requests,re
-          url='https://www.ccerdata.cn/js/dap.queryCondition.js?v=OLG1TikiKCJHJmK2czjfD-doyRVaYHr4qH95RPDW7RE'
-          r=requests.get(url,headers={'User-Agent':'Mozilla/5.0'},timeout=30)
-          r.raise_for_status()
-          open('ccer_querycondition/dap.queryCondition.js','wb').write(r.content)
-          text=r.text
-          print('HTTP',r.status_code,'BYTES',len(r.content),flush=True)
-          for term in ['getResult','resultFields','groupRelation','fieldOperator','fieldValue','Like','Equal']:
-              hits=list(re.finditer(term,text,re.I))
-              print('TERM',term,'HITS',len(hits),flush=True)
-              for h in hits[:10]:
-                  print(re.sub(r'\s+',' ',text[max(0,h.start()-600):min(len(text),h.end()+1500)])[:2200],flush=True)
+          urls=[
+            'https://www.ccerdata.cn/js/dap.queryCondition.js?v=OLG1TikiKCJHJmK2czjfD-doyRVaYHr4qH95RPDW7RE',
+            'https://www.ccerdata.cn/js/dap.queryCondition.js'
+          ]
+          text=''
+          for u in urls:
+            try:
+              r=requests.get(u,headers={'User-Agent':'Mozilla/5.0'},timeout=30)
+              print('URL',u,'HTTP',r.status_code,'BYTES',len(r.content),flush=True)
+              if r.status_code==200 and len(r.text)>1000: text=r.text; break
+            except Exception as e: print('ERR',repr(e),flush=True)
+          print('TEXT_LEN',len(text),flush=True)
+          # Print compact contexts around code paths that construct condition objects/operators.
+          pats=[r'queryType',r'DateRange',r'NumberRange',r'Numeric',r'operator',r'fieldOperator',r'condition',r'rules',r'\.type\s*=',r'type:',r'contains',r'equal',r'greater',r'less']
+          seen=set()
+          for pat in pats:
+            hs=list(re.finditer(pat,text,re.I))
+            print('\nPAT',pat,'HITS',len(hs),flush=True)
+            for h in hs[:20]:
+              a=max(0,h.start()-900); b=min(len(text),h.end()+1800)
+              sn=re.sub(r'\s+',' ',text[a:b])
+              key=sn[:250]
+              if key in seen: continue
+              seen.add(key)
+              print(sn[:2800],flush=True)
+          # Also surface string literals that look like short operator tokens.
+          lits=re.findall(r'["\']([A-Za-z][A-Za-z0-9_<>!=.-]{0,24})["\']',text)
+          cand=sorted(set(x for x in lits if any(k in x.lower() for k in ['eq','gt','lt','range','like','contain','between','date','num'])))
+          print('\nCANDIDATE_LITERALS',cand,flush=True)
           PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: fnz-ccer-querycondition-js-v2
-          path: ccer_querycondition/
